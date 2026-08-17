@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Users{% endblock %}
+{% block content %}
+<h1>Users</h1>
+
+<table class="file-table">
+  <thead><tr><th>Username</th><th>Role</th><th>Servers</th><th></th></tr></thead>
+  <tbody>
+    {% for u in users %}
+    <tr>
+      <td>{{ u.username }}</td>
+      <td>{{ 'admin' if u.is_admin else 'customer' }}</td>
+      <td>{{ u.servers|length }}</td>
+      <td class="row-actions">
+        {% if u.id != current_user.id %}
+        <form class="inline-form" method="post" action="{{ url_for('admin_users_delete', user_id=u.id) }}" onsubmit="return confirm('Delete user {{ u.username }}?');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="link-btn danger">Delete</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h2>Create User</h2>
+<form method="post" action="{{ url_for('admin_users_create') }}" class="panel-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label>Username <input type="text" name="username" required></label>
+  <label>Password <input type="password" name="password" minlength="8" required></label>
+  <label class="checkbox-label"><input type="checkbox" name="is_admin"> Grant admin access</label>
+  <button type="submit" class="btn btn-blue">Create</button>
+</form>
+{% endblock %}

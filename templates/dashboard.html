@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Servers{% endblock %}
+{% block content %}
+<h1>Your Servers</h1>
+{% if not servers %}
+  <p class="muted">No servers yet.{% if current_user.is_admin %} <a href="{{ url_for('admin_servers_create') }}">Create one</a>.{% endif %}</p>
+{% else %}
+<div class="server-grid">
+  {% for s in servers %}
+  <a class="server-card" href="{{ url_for('server_detail', server_id=s.id) }}">
+    <div class="server-card-top">
+      <span class="status-dot status-{{ statuses.get(s.id, 'unknown') }}"></span>
+      <span class="server-name">{{ s.name }}</span>
+    </div>
+    <div class="server-card-meta">{{ s.image }}</div>
+    <div class="server-card-meta">{{ statuses.get(s.id, 'unknown') }} · {{ s.memory_mb }} MB
+      {% if current_user.is_admin and s.owner %} · owner: {{ s.owner.username }}{% endif %}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

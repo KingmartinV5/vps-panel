@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}New Server{% endblock %}
+{% block content %}
+<h1>Create Server</h1>
+<form method="post" class="panel-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label>Name
+    <input type="text" name="name" value="{{ form.get('name', '') }}" required>
+  </label>
+  <label>Image
+    <select name="image" required>
+      {% for img in allowed_images %}
+      <option value="{{ img }}" {% if form.get('image') == img %}selected{% endif %}>{{ img }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Memory limit (MB)
+    <input type="number" name="memory_mb" min="256" step="256" value="{{ form.get('memory_mb', '2048') }}" required>
+  </label>
+  <label>Port mappings (one per line, hostport:containerport[/tcp|udp])
+    <textarea name="ports" rows="3" placeholder="25565:25565">{{ form.get('ports', '') }}</textarea>
+  </label>
+  <label>Environment variables (one per line, KEY=VALUE)
+    <textarea name="env" rows="4" placeholder="EULA=TRUE&#10;MEMORY=2048M">{{ form.get('env', '') }}</textarea>
+  </label>
+  <label>Owner (customer)
+    <select name="owner_id">
+      <option value="">— unassigned —</option>
+      {% for c in customers %}
+      <option value="{{ c.id }}" {% if form.get('owner_id')|string == c.id|string %}selected{% endif %}>{{ c.username }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="submit" class="btn btn-blue">Create Server</button>
+</form>
+{% endblock %}

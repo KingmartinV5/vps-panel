@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}{{ server.name }} · Backups{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>{{ server.name }}</h1>
+  <div class="tabs">
+    <a class="tab" href="{{ url_for('server_detail', server_id=server.id) }}">Console</a>
+    <a class="tab" href="{{ url_for('server_files', server_id=server.id) }}">Files</a>
+    <span class="tab active">Backups</span>
+  </div>
+</div>
+
+<form method="post" action="{{ url_for('server_backups_create', server_id=server.id) }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <button type="submit" class="btn btn-blue">Create Backup Now</button>
+</form>
+
+<table class="file-table">
+  <thead><tr><th>File</th><th>Size</th><th>Created</th><th></th></tr></thead>
+  <tbody>
+    {% for b in backups %}
+    <tr>
+      <td>{{ b.filename }}</td>
+      <td>{{ b.size_mb }} MB</td>
+      <td>{{ b.mtime.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td class="row-actions">
+        <a href="{{ url_for('server_backups_download', server_id=server.id, filename=b.filename) }}">Download</a>
+        <form class="inline-form" method="post" action="{{ url_for('server_backups_delete', server_id=server.id, filename=b.filename) }}" onsubmit="return confirm('Delete this backup?');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="link-btn danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="muted">No backups yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

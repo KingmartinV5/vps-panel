@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}{{ server.name }} · Files{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>{{ server.name }}</h1>
+  <div class="tabs">
+    <a class="tab" href="{{ url_for('server_detail', server_id=server.id) }}">Console</a>
+    <span class="tab active">Files</span>
+    <a class="tab" href="{{ url_for('server_backups', server_id=server.id) }}">Backups</a>
+  </div>
+</div>
+
+<div class="path-bar">
+  <a href="{{ url_for('server_files', server_id=server.id) }}">/data</a>
+  {% if path %}{% for part in path.split('/') %}/ <span>{{ part }}</span>{% endfor %}{% endif %}
+</div>
+
+<div class="file-toolbar">
+  <form class="inline-form" method="post" action="{{ url_for('server_files_upload', server_id=server.id) }}" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="path" value="{{ path }}">
+    <input type="file" name="file" required>
+    <button type="submit" class="btn btn-blue">Upload</button>
+  </form>
+  <form class="inline-form" method="post" action="{{ url_for('server_files_mkdir', server_id=server.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="path" value="{{ path }}">
+    <input type="text" name="name" placeholder="New folder name" required>
+    <button type="submit" class="btn btn-outline">New Folder</button>
+  </form>
+</div>
+
+<table class="file-table">
+  <thead><tr><th>Name</th><th>Size</th><th>Modified</th><th></th></tr></thead>
+  <tbody>
+    {% if parent is not none %}
+    <tr>
+      <td colspan="4"><a href="{{ url_for('server_files', server_id=server.id, path=parent) }}">.. (up)</a></td>
+    </tr>
+    {% endif %}
+    {% for e in entries %}
+    <tr>
+      <td>
+        {% if e.is_dir %}
+          <a href="{{ url_for('server_files', server_id=server.id, path=(path + '/' + e.name if path else e.name)) }}">📁 {{ e.name }}</a>
+        {% else %}
+          {{ e.name }}
+        {% endif %}
+      </td>
+      <td>{{ e.size if e.size is not none else '' }}</td>
+      <td>{{ e.mtime.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td class="row-actions">
+        {% if not e.is_dir %}
+        <a href="{{ url_for('server_files_edit', server_id=server.id, path=(path + '/' + e.name if path else e.name)) }}">Edit</a>
+        <a href="{{ url_for('server_files_download', server_id=server.id, path=(path + '/' + e.name if path else e.name)) }}">Download</a>
+        {% endif %}
+        <form class="inline-form" method="post" action="{{ url_for('server_files_delete', server_id=server.id) }}" onsubmit="return confirm('Delete {{ e.name }}?');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="path" value="{{ path + '/' + e.name if path else e.name }}">
+          <button type="submit" class="link-btn danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

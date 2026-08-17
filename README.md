@@ -1,0 +1,151 @@
+# VPS Panel
+
+A small Pterodactyl-style web panel for managing game/app servers that run
+as **Docker containers on this VPS**. Lets you (admin) provision containers
+and hand customers a login where they can only see and control their own
+server: power controls, live console, file manager, and backups.
+
+This is unrelated to the minikube/Kubernetes stack described in the repo's
+`CLAUDE.md` — it's meant to run on a separate VPS that hosts customer
+containers directly via the Docker Engine.
+
+## How it works
+
+- Each "server" in the panel is one Docker container, created with a bind
+  mount at `/data` pointing at `data/servers/<slug>/` on the host. The file
+  manager and backups operate on that host directory directly.
+- Containers are created with `stdin_open=True, tty=True` so the panel can
+  attach to the container's stdin and send console commands, and stream its
+  logs/stdout back as the "console" (same idea as `docker attach`).
+- Auth is username/password (Flask-Login, salted+hashed passwords). Customers
+  only ever see servers assigned to them (`owner_id`); admins see everything
+  and get a "New Server" / "Users" section.
+
+## ⚠️ Security notes — read before exposing this to the internet
+
+- **Whatever OS user runs this app needs access to the Docker socket**
+  (`docker` group membership, or root). That is root-equivalent power on the
+  host. Treat this app's account, its `SECRET_KEY`, and its session cookies
+  with the same care as root credentials. Don't run it as an unnecessarily
+  privileged user beyond what's needed for the docker group.
+- Only admin accounts can create/delete servers/containers or manage users.
+  Customer accounts are scoped to their own container's power actions,
+  console, files (under their server's `/data` dir only), and backups.
+- The file manager resolves every path through `fileops.safe_join()`, which
+  rejects anything that escapes the server's data directory — but it's still
+  new code; if you extend it, keep all filesystem access going through that
+  function.
+- Run this behind a reverse proxy (Caddy/nginx) terminating TLS, and set
+  `PANEL_FORCE_SSL=1` so session cookies get `Secure`. Don't put the raw
+  Flask dev server directly on the internet.
+- The Docker images a server can be created from are restricted to an
+  allowlist (`PANEL_ALLOWED_IMAGES`, see below) — this stops arbitrary image
+  names being launched on your host from the admin form.
+
+## Setup (recommended: the `wbdash` installer)
+
+Drop this whole `vps-panel/` directory anywhere on a Linux box — it doesn't
+need Python, pip, or Docker preinstalled. `wbdash` figures out the distro's
+package manager (apt/dnf/yum/pacman/apk/zypper) and installs whatever's
+missing, including Docker itself if it's not there.
+
+```bash
+cd vps-panel
+sudo ./wbdash install      # one-time: installs system deps + venv + symlinks
+                            # itself to /usr/local/bin/wbdash
+wbdash                      # starts the panel in the foreground
+```
+
+From then on `wbdash` is just a command, from any directory:
+
+```bash
+wbdash start --host 0.0.0.0 --port 8080 --daemon   # background, remembers host/port
+wbdash status
+wbdash stop
+wbdash manage create-user alice                     # forwards to manage.py
+wbdash help
+```
+
+`sudo wbdash install -y` skips the interactive "install Docker?" prompt, for
+unattended/scripted installs.
+
+On first run it auto-creates an `admin` account with a random password
+printed to the console (and saved in `panel.log` if run with `--daemon`) —
+copy it down, log in, and create real accounts (`Users` in the sidebar, or
+`wbdash manage create-user <name>` / `create-admin <name>`).
+
+### Manual setup (no installer)
+
+If you'd rather manage the venv yourself:
+
+```bash
+cd vps-panel
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+docker ps   # should not error / require sudo
+python app.py
+```
+
+## Configuration (environment variables)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PANEL_SECRET_KEY` | auto-generated, persisted in `instance/secret_key` | Flask session signing key |
+| `PANEL_DATABASE_URL` | sqlite in `instance/panel.db` | SQLAlchemy DB URI |
+| `PANEL_SERVERS_ROOT` | `data/servers` | where each server's `/data` bind mount lives |
+| `PANEL_BACKUPS_ROOT` | `data/backups` | where `.tar.gz` backups are written |
+| `PANEL_ALLOWED_IMAGES` | `itzg/minecraft-server,itzg/minecraft-bedrock-server,itzg/mc-proxy` | comma-separated image allowlist for server creation |
+| `PANEL_MAX_UPLOAD_MB` | `250` | max file manager upload size |
+| `PANEL_MAX_EDIT_MB` | `2` | max file size editable in the browser (bigger files: download only) |
+| `PANEL_FORCE_SSL` | `0` | set `1` once served over HTTPS, to mark cookies `Secure` |
+
+## Running in production
+
+`wbdash start --daemon` is fine for quick/LAN use, but it's still the Flask
+dev server under a `nohup` wrapper — no auto-restart on crash or reboot. For
+anything internet-facing, use gunicorn behind a reverse proxy + a systemd
+unit (below).
+
+The console uses Server-Sent Events (long-lived HTTP connections), so use a
+threaded/async worker model, e.g. gunicorn with `gthread` (`pip install
+gunicorn`):
+
+```bash
+gunicorn --preload -w 2 --threads 8 -b 127.0.0.1:5000 app:app
+```
+
+(`--preload` matters here: `app.py` runs its one-time DB init / admin-bootstrap
+at import time, so without `--preload` each worker process would import it
+separately and race to insert the same `admin` row.)
+
+...and put Caddy/nginx in front for TLS. Example systemd unit:
+
+```ini
+[Unit]
+Description=VPS Panel
+After=network.target docker.service
+
+[Service]
+User=panel
+Group=docker
+WorkingDirectory=/opt/vps-panel
+ExecStart=/opt/vps-panel/venv/bin/gunicorn --preload -w 2 --threads 8 -b 127.0.0.1:5000 app:app
+Restart=on-failure
+Environment=PANEL_FORCE_SSL=1
+
+[Install]
+WantedBy=multi-user.target
+```
+
+(`User=panel` in the `docker` group — not root — is the minimum privilege
+that still allows Docker socket access.)
+
+## What's not included (roadmap ideas, not built)
+
+- Billing/subscription integration
+- Per-customer CPU quota beyond the container's own `mem_limit`
+  (add `nano_cpus`/`cpu_quota` in `docker_manager.create_container` if you
+  want hard CPU caps too)
+- Multi-server-per-container-image templates / one-click installers
+- Audit log of admin actions

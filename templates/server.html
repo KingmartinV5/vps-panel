@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}{{ server.name }}{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1><span class="status-dot status-{{ status }}"></span> {{ server.name }}</h1>
+  <div class="tabs">
+    <span class="tab active">Console</span>
+    <a class="tab" href="{{ url_for('server_files', server_id=server.id) }}">Files</a>
+    <a class="tab" href="{{ url_for('server_backups', server_id=server.id) }}">Backups</a>
+  </div>
+</div>
+
+<div class="power-row">
+  <form method="post" action="{{ url_for('server_power', server_id=server.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="start">
+    <button type="submit" class="btn btn-green">Start</button>
+  </form>
+  <form method="post" action="{{ url_for('server_power', server_id=server.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="restart">
+    <button type="submit" class="btn btn-amber">Restart</button>
+  </form>
+  <form method="post" action="{{ url_for('server_power', server_id=server.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="stop">
+    <button type="submit" class="btn btn-red">Stop</button>
+  </form>
+  <form method="post" action="{{ url_for('server_power', server_id=server.id) }}" onsubmit="return confirm('Force kill the server process?');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="kill">
+    <button type="submit" class="btn btn-outline-red">Kill</button>
+  </form>
+
+  <div class="stats-inline" id="stats-inline">
+    <span>CPU <b id="stat-cpu">–</b></span>
+    <span>RAM <b id="stat-mem">–</b></span>
+  </div>
+</div>
+
+<div id="console-box" class="console-box"></div>
+
+<form id="console-form" class="console-input-row">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="text" id="console-input" autocomplete="off" placeholder="Type a command and press Enter…">
+  <button type="submit" class="btn btn-blue">Send</button>
+</form>
+
+{% if current_user.is_admin %}
+<div class="danger-zone">
+  <h3>Danger zone</h3>
+  <form method="post" action="{{ url_for('admin_servers_delete', server_id=server.id) }}"
+        onsubmit="return confirm('Permanently delete this server\'s container? This cannot be undone.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="checkbox-label"><input type="checkbox" name="delete_data"> also delete data directory ({{ server.data_path }})</label>
+    <button type="submit" class="btn btn-outline-red">Delete Server</button>
+  </form>
+</div>
+{% endif %}
+
+<script>
+  window.SERVER_ID = {{ server.id }};
+  window.CSRF_TOKEN = "{{ csrf_token() }}";
+</script>
+<script src="{{ url_for('static', filename='js/console.js') }}"></script>
+{% endblock %}

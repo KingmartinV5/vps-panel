@@ -1,0 +1,8 @@
+instance/
+data/
+__pycache__/
+*.pyc
+venv/
+.env
+*.log
+*.pid

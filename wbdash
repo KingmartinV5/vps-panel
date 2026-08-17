@@ -1,0 +1,348 @@
+#!/usr/bin/env bash
+# wbdash -- self-installing launcher for the VPS panel.
+#
+# First run (as root or via sudo):   sudo ./wbdash install
+# After that, from anywhere:         wbdash
+#
+# `wbdash install` installs whatever system packages are missing (python3,
+# venv/pip, docker), builds a venv next to this script, installs the app's
+# Python dependencies into it, and symlinks this script into
+# /usr/local/bin/wbdash so it's on PATH. Everything after that runs as your
+# normal user -- only the install step needs root.
+set -euo pipefail
+
+# --- Resolve where this script (and therefore the app) actually lives, ---
+# --- even when invoked through the /usr/local/bin/wbdash symlink.       ---
+SELF_PATH="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
+APP_DIR="$(cd "$(dirname "$SELF_PATH")" && pwd)"
+VENV_DIR="$APP_DIR/venv"
+PYTHON_BIN="$VENV_DIR/bin/python"
+PIDFILE="$APP_DIR/instance/wbdash.pid"
+LOGFILE="$APP_DIR/panel.log"
+CONF_FILE="$APP_DIR/instance/wbdash.conf"
+BIN_LINK="/usr/local/bin/wbdash"
+
+WBDASH_HOST_DEFAULT="127.0.0.1"
+WBDASH_PORT_DEFAULT="5000"
+if [[ -f "$CONF_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$CONF_FILE"
+fi
+
+PKG_MGR=""
+
+log()  { echo "[wbdash] $*"; }
+die()  { echo "[wbdash] error: $*" >&2; exit 1; }
+
+print_help() {
+  cat <<EOF
+wbdash -- VPS panel installer/launcher
+
+USAGE
+  wbdash [command] [flags]
+
+  Running with no command at all installs (if needed) and starts the panel
+  in the foreground using the last-used (or default) host/port. Flags can
+  also be given directly with no command, e.g. \`wbdash --port 2667\`, which
+  is shorthand for \`wbdash start --port 2667\`.
+
+COMMANDS
+  install                   Install system deps (python3/venv/pip, Docker),
+                             build the venv, install Python deps, and symlink
+                             this script to $BIN_LINK so \`wbdash\` is on PATH.
+                             Requires root -- re-execs itself with sudo if
+                             not already root.
+      -y, --yes                Skip the interactive "install Docker?" prompt
+                                (assume yes). Use for unattended installs.
+
+  start                      Start the panel.
+      --host <address>         Interface to bind to. Default: last used, or
+                                127.0.0.1 (localhost only) on first run.
+                                Use 0.0.0.0 to listen on all interfaces, or a
+                                specific LAN/public IP to bind just that one.
+      --port <number>          TCP port to listen on. Default: last used, or
+                                5000 on first run.
+      --daemon                 Run in the background (nohup) instead of
+                                blocking the terminal. Writes a pidfile to
+                                $PIDFILE
+                                and logs to
+                                $LOGFILE
+      (host/port are remembered in $CONF_FILE
+       and reused as the default next time you run \`wbdash\` with no flags)
+
+  stop                       Stop a --daemon'd instance (reads the pidfile).
+
+  restart [start flags]      stop, then start again with the given flags.
+
+  status                     Show whether a --daemon'd instance is running.
+
+  manage <args...>           Forward straight to manage.py for user admin:
+                                wbdash manage create-admin <username>
+                                wbdash manage create-user <username>
+                                wbdash manage set-password <username>
+                                wbdash manage list-users
+                                wbdash manage delete-user <username>
+
+  help, -h, --help           This message.
+
+ENVIRONMENT
+  PANEL_SECRET_KEY, PANEL_DATABASE_URL, PANEL_SERVERS_ROOT,
+  PANEL_BACKUPS_ROOT, PANEL_ALLOWED_IMAGES, PANEL_MAX_UPLOAD_MB,
+  PANEL_MAX_EDIT_MB, PANEL_FORCE_SSL -- see README.md. These configure the
+  Flask app itself (allowed server images, upload limits, TLS cookie flag,
+  etc.) and are separate from wbdash's own --host/--port.
+
+EXAMPLES
+  sudo wbdash install -y
+  wbdash --port 2667                          # foreground, quick test
+  wbdash start --host 0.0.0.0 --port 2667 --daemon
+  wbdash status
+  wbdash stop
+  wbdash manage create-user alice
+EOF
+}
+
+# --- Package manager detection -------------------------------------------
+
+detect_pkg_mgr() {
+  if command -v apt-get >/dev/null 2>&1; then PKG_MGR=apt
+  elif command -v dnf >/dev/null 2>&1; then PKG_MGR=dnf
+  elif command -v yum >/dev/null 2>&1; then PKG_MGR=yum
+  elif command -v pacman >/dev/null 2>&1; then PKG_MGR=pacman
+  elif command -v apk >/dev/null 2>&1; then PKG_MGR=apk
+  elif command -v zypper >/dev/null 2>&1; then PKG_MGR=zypper
+  else PKG_MGR=""
+  fi
+  log "package manager: ${PKG_MGR:-none detected}"
+}
+
+pkg_update() {
+  case "$PKG_MGR" in
+    apt) apt-get update ;;
+    *) : ;;
+  esac
+}
+
+pkg_install() {
+  case "$PKG_MGR" in
+    apt) DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" ;;
+    dnf) dnf install -y "$@" ;;
+    yum) yum install -y "$@" ;;
+    pacman) pacman -Sy --noconfirm "$@" ;;
+    apk) apk add --no-cache "$@" ;;
+    zypper) zypper --non-interactive install "$@" ;;
+    *) die "no supported package manager found -- install manually: $*" ;;
+  esac
+}
+
+# --- Dependency bootstrapping ---------------------------------------------
+
+ensure_python() {
+  pkg_update
+  if ! command -v python3 >/dev/null 2>&1; then
+    log "python3 not found, installing..."
+    case "$PKG_MGR" in
+      pacman) pkg_install python ;;
+      *) pkg_install python3 ;;
+    esac
+  fi
+  if ! python3 -m venv --help >/dev/null 2>&1; then
+    log "python3 venv module not usable, installing venv/pip package..."
+    case "$PKG_MGR" in
+      apt) pkg_install python3-venv python3-pip ;;
+      dnf|yum) pkg_install python3-pip ;;
+      pacman) pkg_install python-pip ;;
+      apk) pkg_install py3-pip py3-virtualenv ;;
+      zypper) pkg_install python3-pip python3-virtualenv ;;
+    esac
+  fi
+  python3 -m venv --help >/dev/null 2>&1 || die "python3 venv module still unavailable after installing packages"
+}
+
+ensure_docker() {
+  local assume_yes="$1" real_user="$2"
+  if command -v docker >/dev/null 2>&1; then
+    log "docker: found ($(docker --version 2>/dev/null || echo present))"
+  else
+    if [[ "$assume_yes" != "1" ]]; then
+      read -r -p "[wbdash] Docker was not found and is required to run servers. Install it now via get.docker.com? [y/N] " reply
+      case "$reply" in
+        y|Y|yes|YES) : ;;
+        *) log "skipping Docker install -- install it yourself, then re-run 'sudo wbdash install'."; return 0 ;;
+      esac
+    fi
+    log "installing Docker via get.docker.com..."
+    if curl -fsSL https://get.docker.com -o /tmp/wbdash-get-docker.sh 2>/dev/null \
+      || wget -qO /tmp/wbdash-get-docker.sh https://get.docker.com 2>/dev/null; then
+      sh /tmp/wbdash-get-docker.sh
+      rm -f /tmp/wbdash-get-docker.sh
+    else
+      die "could not reach get.docker.com -- install Docker manually, then re-run 'sudo wbdash install'"
+    fi
+  fi
+
+  systemctl enable --now docker >/dev/null 2>&1 \
+    || service docker start >/dev/null 2>&1 \
+    || rc-service docker start >/dev/null 2>&1 \
+    || true
+
+  if command -v docker >/dev/null 2>&1 && ! id -nG "$real_user" 2>/dev/null | grep -qw docker; then
+    usermod -aG docker "$real_user" 2>/dev/null \
+      && log "added '$real_user' to the docker group -- log out/in (or run 'newgrp docker') for it to take effect"
+  fi
+}
+
+create_venv_as() {
+  local user="$1"
+  if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+    log "creating venv at $VENV_DIR"
+    sudo -u "$user" python3 -m venv "$VENV_DIR"
+  fi
+  if ! sudo -u "$user" "$VENV_DIR/bin/pip" --version >/dev/null 2>&1; then
+    log "venv has no pip, bootstrapping it..."
+    sudo -u "$user" "$VENV_DIR/bin/python" -m ensurepip --upgrade >/dev/null 2>&1 || {
+      curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/wbdash-get-pip.py \
+        && sudo -u "$user" "$VENV_DIR/bin/python" /tmp/wbdash-get-pip.py \
+        && rm -f /tmp/wbdash-get-pip.py
+    }
+  fi
+  log "installing Python dependencies..."
+  sudo -u "$user" "$VENV_DIR/bin/pip" install -q --upgrade pip
+  sudo -u "$user" "$VENV_DIR/bin/pip" install -q -r "$APP_DIR/requirements.txt"
+}
+
+symlink_self() {
+  ln -sf "$APP_DIR/wbdash" "$BIN_LINK"
+  chmod +x "$APP_DIR/wbdash"
+  log "linked $BIN_LINK -> $APP_DIR/wbdash"
+}
+
+cmd_install() {
+  local assume_yes=0
+  for arg in "$@"; do
+    case "$arg" in
+      -y|--yes) assume_yes=1 ;;
+    esac
+  done
+
+  if [[ $EUID -ne 0 ]]; then
+    log "installing system packages requires root, re-running with sudo..."
+    exec sudo -E "$SELF_PATH" install "$@"
+  fi
+
+  local real_user
+  real_user="${SUDO_USER:-$(logname 2>/dev/null || echo root)}"
+
+  detect_pkg_mgr
+  ensure_python
+  ensure_docker "$assume_yes" "$real_user"
+  create_venv_as "$real_user"
+  mkdir -p "$APP_DIR/instance" "$APP_DIR/data/servers" "$APP_DIR/data/backups"
+  chown -R "$real_user" "$APP_DIR/instance" "$APP_DIR/data" "$VENV_DIR"
+  symlink_self
+
+  log "install complete. Run: wbdash start   (or just: wbdash)"
+}
+
+# --- Run / stop / status ---------------------------------------------------
+
+require_installed() {
+  [[ -x "$PYTHON_BIN" ]] || die "not installed yet -- run: sudo wbdash install"
+}
+
+save_conf() {
+  mkdir -p "$(dirname "$CONF_FILE")"
+  printf 'WBDASH_HOST_DEFAULT=%q\nWBDASH_PORT_DEFAULT=%q\n' "$1" "$2" > "$CONF_FILE"
+}
+
+cmd_start() {
+  require_installed
+  local host="$WBDASH_HOST_DEFAULT" port="$WBDASH_PORT_DEFAULT" daemon=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --host) host="$2"; shift 2 ;;
+      --port) port="$2"; shift 2 ;;
+      --daemon) daemon=1; shift ;;
+      *) die "unknown option to start: $1" ;;
+    esac
+  done
+  save_conf "$host" "$port"
+
+  if command -v groups >/dev/null 2>&1 && ! groups | grep -qw docker && [[ $EUID -ne 0 ]]; then
+    log "warning: this shell session doesn't have the 'docker' group active yet -- log out/in or run 'newgrp docker' if the panel can't reach Docker"
+  fi
+
+  mkdir -p "$(dirname "$PIDFILE")"
+
+  if [[ $daemon -eq 1 ]]; then
+    if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+      log "already running (pid $(cat "$PIDFILE"))"
+      exit 0
+    fi
+    PANEL_HOST="$host" PANEL_PORT="$port" nohup "$PYTHON_BIN" "$APP_DIR/app.py" > "$LOGFILE" 2>&1 &
+    echo $! > "$PIDFILE"
+    disown
+    sleep 1
+    log "started in background (pid $(cat "$PIDFILE")), logs: $LOGFILE"
+    log "URL: http://$host:$port"
+  else
+    log "starting on http://$host:$port (Ctrl+C to stop)"
+    PANEL_HOST="$host" PANEL_PORT="$port" exec "$PYTHON_BIN" "$APP_DIR/app.py"
+  fi
+}
+
+cmd_stop() {
+  if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+    kill "$(cat "$PIDFILE")"
+    rm -f "$PIDFILE"
+    log "stopped"
+  else
+    log "not running (no active pidfile)"
+  fi
+}
+
+cmd_status() {
+  if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+    log "running (pid $(cat "$PIDFILE"))"
+  else
+    log "not running"
+  fi
+}
+
+cmd_manage() {
+  require_installed
+  exec "$PYTHON_BIN" "$APP_DIR/manage.py" "$@"
+}
+
+# --- Dispatch ---------------------------------------------------------------
+
+cmd="${1:-}"
+[[ $# -gt 0 ]] && shift || true
+
+case "$cmd" in
+  install) cmd_install "$@" ;;
+  start) cmd_start "$@" ;;
+  stop) cmd_stop ;;
+  status) cmd_status ;;
+  restart) cmd_stop; sleep 1; cmd_start "$@" ;;
+  manage) cmd_manage "$@" ;;
+  help|-h|--help) print_help ;;
+  "")
+    if [[ ! -x "$PYTHON_BIN" ]]; then
+      cmd_install
+    fi
+    cmd_start
+    ;;
+  --host|--port|--daemon)
+    # flags given with no command, e.g. `wbdash --port 2667` -- shorthand for `start`
+    if [[ ! -x "$PYTHON_BIN" ]]; then
+      cmd_install
+    fi
+    cmd_start "$cmd" "$@"
+    ;;
+  *)
+    echo "Unknown command: $cmd" >&2
+    print_help
+    exit 1
+    ;;
+esac
