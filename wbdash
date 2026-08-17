@@ -30,7 +30,7 @@ if [[ -f "$CONF_FILE" ]]; then
 fi
 
 DEBUG_PASSWORD="1408"
-DEMO_PORT="7419"
+DEMO_PORT="7114"
 DEMO_PIDFILE="$APP_DIR/instance/wbdash-demo.pid"
 DEMO_LOGFILE="$APP_DIR/instance/demo-panel.log"
 DEMO_DB_URL="sqlite:///$APP_DIR/instance/demo.db"
@@ -112,10 +112,13 @@ COMMANDS
   debug, --debug             Password-gated demo mode for screenshots. Asks
                               for a password, seeds fake demo servers into a
                               throwaway DB (separate from real data), starts
-                              the panel on 127.0.0.1:$DEMO_PORT, and opens a
-                              public trycloudflare.com link to it (new link
-                              every run). Ctrl+C closes the link. Demo login:
-                              demo-admin / demo, password demo1408.
+                              the panel on port $DEMO_PORT (all interfaces --
+                              reachable on the LAN directly, in case the
+                              tunnel is flaky), and opens a public
+                              trycloudflare.com link to it too (new link
+                              every run). Ctrl+C closes the tunnel link.
+                              Demo login: demo-admin / demo, password
+                              demo1408.
       debug stop                Stop the background demo panel process.
 
   help, -h, --help           This message.
@@ -349,6 +352,13 @@ cmd_manage() {
 
 # --- Demo/debug mode ---------------------------------------------------
 
+detect_lan_ip() {
+  local ip
+  ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')"
+  [[ -z "$ip" ]] && ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  echo "$ip"
+}
+
 ensure_cloudflared() {
   if command -v cloudflared >/dev/null 2>&1; then
     CLOUDFLARED_BIN="$(command -v cloudflared)"
@@ -405,15 +415,21 @@ cmd_debug() {
   if [[ -f "$DEMO_PIDFILE" ]] && kill -0 "$(cat "$DEMO_PIDFILE")" 2>/dev/null; then
     log "demo panel already running (pid $(cat "$DEMO_PIDFILE"))"
   else
+    # bound to 0.0.0.0 (not just loopback) so it's also reachable directly
+    # on the LAN at $DEMO_PORT -- a fallback in case the public tunnel is
+    # having trouble, since cloudflared's quick tunnels are occasionally flaky.
     bg_run "$DEMO_LOGFILE" "$DEMO_PIDFILE" env \
-      PANEL_HOST=127.0.0.1 PANEL_PORT="$DEMO_PORT" \
+      PANEL_HOST=0.0.0.0 PANEL_PORT="$DEMO_PORT" \
       PANEL_DATABASE_URL="$DEMO_DB_URL" \
       PANEL_SERVERS_ROOT="$DEMO_SERVERS_ROOT" \
       PANEL_BACKUPS_ROOT="$DEMO_BACKUPS_ROOT" \
       "$PYTHON_BIN" "$APP_DIR/app.py"
     sleep 1
-    log "demo panel running locally on 127.0.0.1:$DEMO_PORT"
+    log "demo panel running on port $DEMO_PORT"
   fi
+
+  local lan_ip
+  lan_ip="$(detect_lan_ip)"
 
   log "opening a public link for screenshots (Ctrl+C to close it)..."
   local tunnel_log tunnel_pid url
@@ -429,18 +445,27 @@ cmd_debug() {
   for _ in $(seq 1 30); do
     url="$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$tunnel_log" 2>/dev/null | head -1 || true)"
     [[ -n "$url" ]] && break
-    kill -0 "$tunnel_pid" 2>/dev/null || die "cloudflared exited early -- check: $tunnel_log"
+    kill -0 "$tunnel_pid" 2>/dev/null || { log "cloudflared exited early -- check: $tunnel_log"; break; }
     sleep 1
   done
-  [[ -n "$url" ]] || die "timed out waiting for a tunnel URL -- check: $tunnel_log"
 
   echo
-  log "Demo link: $url"
+  if [[ -n "$url" ]]; then
+    log "Public demo link:  $url"
+  else
+    log "warning: no public tunnel link came up (check $tunnel_log) -- use the LAN link below"
+  fi
+  if [[ -n "$lan_ip" ]]; then
+    log "LAN demo link:     http://$lan_ip:$DEMO_PORT"
+  else
+    log "LAN demo link:     http://<this-machine's-LAN-IP>:$DEMO_PORT  (couldn't auto-detect the IP)"
+  fi
   log "Log in as 'demo-admin' or 'demo', password: demo1408"
   echo
-  log "This link is public but random/unguessable and only up while this runs."
-  log "Press Ctrl+C when you're done taking screenshots."
-  wait "$tunnel_pid"
+  log "The public link is unguessable but live for as long as this keeps running."
+  log "Press Ctrl+C when you're done taking screenshots (stops the tunnel; the LAN"
+  log "link and demo panel keep running -- 'wbdash debug stop' to fully shut it down)."
+  wait "$tunnel_pid" 2>/dev/null || true
 }
 
 # --- Dispatch ---------------------------------------------------------------
