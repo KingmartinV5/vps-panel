@@ -44,13 +44,32 @@ containers directly via the Docker Engine.
 
 ## Setup (recommended: the `wbdash` installer)
 
-Drop this whole `vps-panel/` directory anywhere on a Linux box — it doesn't
-need Python, pip, or Docker preinstalled. `wbdash` figures out the distro's
-package manager (apt/dnf/yum/pacman/apk/zypper) and installs whatever's
-missing, including Docker itself if it's not there.
+The repo is at `https://github.com/KingmartinV5/vps-panel` (**private**). To
+`git clone` it on a customer VPS, you need a token — GitHub doesn't accept
+plain username/password over HTTPS anymore:
+
+1. Generate a fine-grained PAT at
+   https://github.com/settings/personal-access-tokens/new, scoped to
+   **only** the `vps-panel` repo, with **Contents: Read-only** permission.
+   That's the minimum needed to clone — if it ever leaks, the blast radius
+   is "someone can read this repo," nothing else.
+2. Clone with it embedded in the URL:
 
 ```bash
+git clone https://<TOKEN>@github.com/KingmartinV5/vps-panel.git vps-panel
 cd vps-panel
+```
+
+(The token then sits in that box's `vps-panel/.git/config` — fine for an
+admin-controlled customer VPS, but don't commit that file or paste it
+anywhere public. Revoke + regenerate the token if a VPS is ever compromised.)
+
+Once cloned, `wbdash` bootstraps everything else — it doesn't need Python,
+pip, or Docker preinstalled. It figures out the distro's package manager
+(apt/dnf/yum/pacman/apk/zypper) and installs whatever's missing, including
+Docker itself if it's not there.
+
+```bash
 sudo ./wbdash install      # one-time: installs system deps + venv + symlinks
                             # itself to /usr/local/bin/wbdash
 wbdash                      # starts the panel in the foreground
