@@ -93,6 +93,30 @@ printed to the console (and saved in `panel.log` if run with `--daemon`) —
 copy it down, log in, and create real accounts (`Users` in the sidebar, or
 `wbdash manage create-user <name>` / `create-admin <name>`).
 
+### Demo mode (for screenshots/marketing)
+
+```bash
+wbdash --debug   # or: wbdash debug
+```
+
+Asks for a password (`1408`), then:
+- seeds a few fake servers (`demo_seed.py`) into a **throwaway demo
+  database** (`instance/demo.db`, `data/demo-servers/`) — completely
+  separate from real customer data, safe to run on a box with real
+  customers on it
+- starts the panel locally on `127.0.0.1:7419`
+- downloads a `cloudflared` static binary the first time (into `bin/`, not
+  installed system-wide) and opens a free Cloudflare **quick tunnel**, so
+  you get a fresh public `https://*.trycloudflare.com` link every run
+
+Log in on that link as `demo-admin` / `demo` (both password `demo1408`) to
+see the admin and customer views. Ctrl+C closes the tunnel link; the demo
+panel process itself keeps running in the background so the next `--debug`
+run is instant (no reseeding) — `wbdash debug stop` shuts it down fully.
+
+The tunnel URL is unguessable but public for as long as it's open, so don't
+leave it running unattended longer than it takes to grab screenshots.
+
 ### Manual setup (no installer)
 
 If you'd rather manage the venv yourself:

@@ -29,10 +29,36 @@ if [[ -f "$CONF_FILE" ]]; then
   source "$CONF_FILE"
 fi
 
+DEBUG_PASSWORD="1408"
+DEMO_PORT="7419"
+DEMO_PIDFILE="$APP_DIR/instance/wbdash-demo.pid"
+DEMO_LOGFILE="$APP_DIR/instance/demo-panel.log"
+DEMO_DB_URL="sqlite:///$APP_DIR/instance/demo.db"
+DEMO_SERVERS_ROOT="$APP_DIR/data/demo-servers"
+DEMO_BACKUPS_ROOT="$APP_DIR/data/demo-backups"
+CLOUDFLARED_BIN="$APP_DIR/bin/cloudflared"
+
 PKG_MGR=""
 
 log()  { echo "[wbdash] $*"; }
 die()  { echo "[wbdash] error: $*" >&2; exit 1; }
+
+# Launches "$@" fully detached (own session/process group, stdin closed) so
+# it survives the launching script exiting or being Ctrl+C'd -- plain nohup
+# alone doesn't protect against that when job control is off, which is the
+# normal case for a script (non-interactive shell), even one run from an
+# interactive terminal.
+bg_run() {
+  local logfile="$1" pidfile="$2"
+  shift 2
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" > "$logfile" 2>&1 < /dev/null &
+  else
+    nohup "$@" > "$logfile" 2>&1 < /dev/null &
+  fi
+  echo $! > "$pidfile"
+  disown
+}
 
 print_help() {
   cat <<EOF
@@ -82,6 +108,15 @@ COMMANDS
                                 wbdash manage set-password <username>
                                 wbdash manage list-users
                                 wbdash manage delete-user <username>
+
+  debug, --debug             Password-gated demo mode for screenshots. Asks
+                              for a password, seeds fake demo servers into a
+                              throwaway DB (separate from real data), starts
+                              the panel on 127.0.0.1:$DEMO_PORT, and opens a
+                              public trycloudflare.com link to it (new link
+                              every run). Ctrl+C closes the link. Demo login:
+                              demo-admin / demo, password demo1408.
+      debug stop                Stop the background demo panel process.
 
   help, -h, --help           This message.
 
@@ -279,9 +314,7 @@ cmd_start() {
       log "already running (pid $(cat "$PIDFILE"))"
       exit 0
     fi
-    PANEL_HOST="$host" PANEL_PORT="$port" nohup "$PYTHON_BIN" "$APP_DIR/app.py" > "$LOGFILE" 2>&1 &
-    echo $! > "$PIDFILE"
-    disown
+    bg_run "$LOGFILE" "$PIDFILE" env PANEL_HOST="$host" PANEL_PORT="$port" "$PYTHON_BIN" "$APP_DIR/app.py"
     sleep 1
     log "started in background (pid $(cat "$PIDFILE")), logs: $LOGFILE"
     log "URL: http://$host:$port"
@@ -314,6 +347,102 @@ cmd_manage() {
   exec "$PYTHON_BIN" "$APP_DIR/manage.py" "$@"
 }
 
+# --- Demo/debug mode ---------------------------------------------------
+
+ensure_cloudflared() {
+  if command -v cloudflared >/dev/null 2>&1; then
+    CLOUDFLARED_BIN="$(command -v cloudflared)"
+    return
+  fi
+  if [[ -x "$CLOUDFLARED_BIN" ]]; then
+    return
+  fi
+  log "cloudflared not found, downloading a static binary for the demo tunnel..."
+  mkdir -p "$APP_DIR/bin"
+  local arch
+  case "$(uname -m)" in
+    x86_64) arch="amd64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    armv7l|armv6l) arch="arm" ;;
+    *) die "unsupported architecture for cloudflared: $(uname -m) -- install cloudflared manually and put it on PATH" ;;
+  esac
+  local url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}"
+  curl -fsSL "$url" -o "$CLOUDFLARED_BIN" 2>/dev/null || wget -qO "$CLOUDFLARED_BIN" "$url" \
+    || die "failed to download cloudflared from $url"
+  chmod +x "$CLOUDFLARED_BIN"
+}
+
+cmd_debug() {
+  if [[ "${1:-}" == "stop" ]]; then
+    if [[ -f "$DEMO_PIDFILE" ]] && kill -0 "$(cat "$DEMO_PIDFILE")" 2>/dev/null; then
+      kill "$(cat "$DEMO_PIDFILE")"
+      rm -f "$DEMO_PIDFILE"
+      log "demo panel stopped"
+    else
+      log "demo panel not running"
+    fi
+    return
+  fi
+
+  require_installed
+  command -v docker >/dev/null 2>&1 || die "docker is required for the demo -- run 'sudo wbdash install' first"
+
+  read -r -s -p "[wbdash] Password: " pass
+  echo
+  if [[ "$pass" != "$DEBUG_PASSWORD" ]]; then
+    die "incorrect password"
+  fi
+
+  ensure_cloudflared
+
+  log "seeding demo data (safe to re-run -- fake servers, separate from real data)..."
+  PANEL_DATABASE_URL="$DEMO_DB_URL" \
+  PANEL_SERVERS_ROOT="$DEMO_SERVERS_ROOT" \
+  PANEL_BACKUPS_ROOT="$DEMO_BACKUPS_ROOT" \
+    "$PYTHON_BIN" "$APP_DIR/demo_seed.py"
+
+  mkdir -p "$(dirname "$DEMO_PIDFILE")"
+  if [[ -f "$DEMO_PIDFILE" ]] && kill -0 "$(cat "$DEMO_PIDFILE")" 2>/dev/null; then
+    log "demo panel already running (pid $(cat "$DEMO_PIDFILE"))"
+  else
+    bg_run "$DEMO_LOGFILE" "$DEMO_PIDFILE" env \
+      PANEL_HOST=127.0.0.1 PANEL_PORT="$DEMO_PORT" \
+      PANEL_DATABASE_URL="$DEMO_DB_URL" \
+      PANEL_SERVERS_ROOT="$DEMO_SERVERS_ROOT" \
+      PANEL_BACKUPS_ROOT="$DEMO_BACKUPS_ROOT" \
+      "$PYTHON_BIN" "$APP_DIR/app.py"
+    sleep 1
+    log "demo panel running locally on 127.0.0.1:$DEMO_PORT"
+  fi
+
+  log "opening a public link for screenshots (Ctrl+C to close it)..."
+  local tunnel_log tunnel_pid url
+  tunnel_log="$(mktemp)"
+  "$CLOUDFLARED_BIN" tunnel --url "http://127.0.0.1:$DEMO_PORT" > "$tunnel_log" 2>&1 &
+  tunnel_pid=$!
+
+  # shellcheck disable=SC2317
+  cleanup_tunnel() { kill "${tunnel_pid:-}" 2>/dev/null || true; rm -f "${tunnel_log:-}"; }
+  trap cleanup_tunnel EXIT INT TERM
+
+  url=""
+  for _ in $(seq 1 30); do
+    url="$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$tunnel_log" 2>/dev/null | head -1 || true)"
+    [[ -n "$url" ]] && break
+    kill -0 "$tunnel_pid" 2>/dev/null || die "cloudflared exited early -- check: $tunnel_log"
+    sleep 1
+  done
+  [[ -n "$url" ]] || die "timed out waiting for a tunnel URL -- check: $tunnel_log"
+
+  echo
+  log "Demo link: $url"
+  log "Log in as 'demo-admin' or 'demo', password: demo1408"
+  echo
+  log "This link is public but random/unguessable and only up while this runs."
+  log "Press Ctrl+C when you're done taking screenshots."
+  wait "$tunnel_pid"
+}
+
 # --- Dispatch ---------------------------------------------------------------
 
 cmd="${1:-}"
@@ -326,6 +455,7 @@ case "$cmd" in
   status) cmd_status ;;
   restart) cmd_stop; sleep 1; cmd_start "$@" ;;
   manage) cmd_manage "$@" ;;
+  debug|--debug) cmd_debug "$@" ;;
   help|-h|--help) print_help ;;
   "")
     if [[ ! -x "$PYTHON_BIN" ]]; then

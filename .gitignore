@@ -1,5 +1,6 @@
 instance/
 data/
+bin/
 __pycache__/
 *.pyc
 venv/
