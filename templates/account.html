@@ -1,0 +1,28 @@
+{{define "account"}}
+<h1>My Account</h1>
+<p class="muted">Signed in as <b>{{.CurrentUser.Username}}</b>{{if .CurrentUser.IsAdmin}} <span class="badge">admin</span>{{end}} · member since {{.CurrentUser.CreatedAt.Format "Jan 2, 2006"}}</p>
+
+<h2>Change Password</h2>
+<form method="post" action="/account/password" class="panel-form">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <label>Current password
+    <input type="password" name="current_password" autocomplete="current-password" required>
+  </label>
+  <label>New password
+    <input type="password" name="new_password" minlength="8" autocomplete="new-password" required>
+  </label>
+  <label>Confirm new password
+    <input type="password" name="confirm_password" minlength="8" autocomplete="new-password" required>
+  </label>
+  <button type="submit" class="btn btn-blue">Change Password</button>
+</form>
+
+<h2>Need help?</h2>
+<p class="muted">
+  Something wrong with your server, or a billing question? Reach out and we'll get back to you.
+</p>
+<a class="btn btn-outline" href="mailto:playkingsempire@gmail.com?subject=KingsEmpire%20Support%20Request">
+  <svg class="btn-icon" viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="4.5" width="15" height="11" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3 5.5 10 11l7-5.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+  Email Support
+</a>
+{{end}}

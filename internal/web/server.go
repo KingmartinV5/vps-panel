@@ -27,6 +27,7 @@ type Server struct {
 func New(cfg *config.Config, st *store.Store, docker *dockermgr.Manager, authMgr *auth.Manager, templatesFS, staticFS fs.FS) (*Server, error) {
 	funcs := template.FuncMap{
 		"idstr": func(id int64) string { return strconv.FormatInt(id, 10) },
+		"slice": func(items ...string) []string { return items },
 	}
 	tmpl, err := template.New("").Funcs(funcs).ParseFS(templatesFS, "*.html")
 	if err != nil {
@@ -56,6 +57,9 @@ func (s *Server) routes(staticFS fs.FS) {
 	s.mux.HandleFunc("POST /login", s.handleLoginSubmit)
 	s.mux.HandleFunc("GET /logout", s.requireLogin(s.handleLogout))
 
+	s.mux.HandleFunc("GET /account", s.requireLogin(s.handleAccountForm))
+	s.mux.HandleFunc("POST /account/password", s.requireLogin(s.handleAccountPasswordSubmit))
+
 	s.mux.HandleFunc("GET /{$}", s.requireLogin(s.handleDashboard))
 
 	s.mux.HandleFunc("GET /server/{id}", s.withServer(s.handleServerDetail))
@@ -77,13 +81,22 @@ func (s *Server) routes(staticFS fs.FS) {
 	s.mux.HandleFunc("GET /server/{id}/backups/{filename}/download", s.withServer(s.handleBackupsDownload))
 	s.mux.HandleFunc("POST /server/{id}/backups/{filename}/delete", s.withServer(s.handleBackupsDelete))
 
+	s.mux.HandleFunc("GET /server/{id}/plugins", s.withServer(s.handleServerPlugins))
+	s.mux.HandleFunc("POST /server/{id}/plugins/install", s.withServer(s.handleServerPluginsInstall))
+	s.mux.HandleFunc("POST /server/{id}/plugins/remove", s.withServer(s.handleServerPluginsRemove))
+
 	s.mux.HandleFunc("GET /admin/users", s.requireAdmin(s.handleAdminUsers))
 	s.mux.HandleFunc("POST /admin/users/create", s.requireAdmin(s.handleAdminUsersCreate))
 	s.mux.HandleFunc("POST /admin/users/{id}/delete", s.requireAdmin(s.handleAdminUsersDelete))
+	s.mux.HandleFunc("GET /admin/users/{id}/edit", s.requireAdmin(s.handleAdminUsersEditForm))
+	s.mux.HandleFunc("POST /admin/users/{id}/edit", s.requireAdmin(s.handleAdminUsersEditSubmit))
 
 	s.mux.HandleFunc("GET /admin/servers/create", s.requireAdmin(s.handleAdminServersCreateForm))
 	s.mux.HandleFunc("POST /admin/servers/create", s.requireAdmin(s.handleAdminServersCreateSubmit))
+	s.mux.HandleFunc("GET /server/{id}/edit", s.requireAdmin(s.handleAdminServersEditForm))
+	s.mux.HandleFunc("POST /server/{id}/edit", s.requireAdmin(s.handleAdminServersEditSubmit))
 	s.mux.HandleFunc("POST /server/{id}/delete", s.requireAdmin(s.handleAdminServersDelete))
+	s.mux.HandleFunc("POST /server/{id}/reset-world", s.requireAdmin(s.handleAdminServersResetWorld))
 }
 
 func logErr(context string, err error) {

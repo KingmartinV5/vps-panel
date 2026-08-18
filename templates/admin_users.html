@@ -10,6 +10,7 @@
       <td>{{.Role}}</td>
       <td>{{.ServerCount}}</td>
       <td class="row-actions">
+        <a href="/admin/users/{{.ID}}/edit">Edit</a>
         {{if .ShowDelete}}
         <form class="inline-form" method="post" action="/admin/users/{{.ID}}/delete" onsubmit="return confirm('Delete user {{.Username}}?');">
           <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">

@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"vps-panel/internal/dockermgr"
 	"vps-panel/internal/fileops"
+	"vps-panel/internal/plugincatalog"
 	"vps-panel/internal/store"
 )
 
@@ -88,10 +90,50 @@ func seedDemoFiles(dataDir string) error {
 // entirely separate from real customer data via the PANEL_DATABASE_URL /
 // PANEL_SERVERS_ROOT / PANEL_BACKUPS_ROOT env vars wbdash points at the demo
 // instance before invoking this.
+// demoCatalogEntries are placeholder plugin listings for the demo catalog --
+// clearly fake ("Demo Plugin"), not real third-party plugins (this panel
+// never bundles those, see internal/plugincatalog's package doc) -- just
+// enough for the Plugins tab to have something to show off in screenshots.
+// Their "jars" are empty files; nothing ever actually loads them.
+var demoCatalogEntries = []plugincatalog.Entry{
+	{ID: "demo-economy", Name: "Demo Plugin — Economy", Description: "Placeholder listing for a coin/shop economy plugin. Not a real plugin -- add your own catalog entries for production.", Category: "Economy", Filename: "demo-economy.jar"},
+	{ID: "demo-antigrief", Name: "Demo Plugin — Anti-Grief", Description: "Placeholder listing for a claims/anti-grief plugin.", Category: "Protection", Filename: "demo-antigrief.jar"},
+	{ID: "demo-funcommands", Name: "Demo Plugin — Fun Commands", Description: "Placeholder listing for a fun/utility commands plugin.", Category: "Fun", Filename: "demo-funcommands.jar"},
+}
+
+// seedDemoPluginCatalog writes a small placeholder catalog.json (+ empty
+// stand-in jars) into the demo's own isolated PluginCatalogRoot, so the
+// Plugins tab has example cards to show in screenshots without ever
+// touching -- or needing -- the real admin-curated catalog. Idempotent: a
+// pre-existing catalog.json is left alone.
+func seedDemoPluginCatalog(root string) error {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return err
+	}
+	catalogPath := filepath.Join(root, "catalog.json")
+	if _, err := os.Stat(catalogPath); err == nil {
+		return nil
+	}
+	for _, e := range demoCatalogEntries {
+		if err := os.WriteFile(filepath.Join(root, e.Filename), []byte{}, 0o644); err != nil {
+			return err
+		}
+	}
+	data, err := json.MarshalIndent(demoCatalogEntries, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(catalogPath, data, 0o644)
+}
+
 func runDemoSeed() {
 	cfg, st, docker, _ := openDeps()
 	defer st.Close()
 	ctx := context.Background()
+
+	if err := seedDemoPluginCatalog(cfg.PluginCatalogRoot); err != nil {
+		fmt.Printf("warning: could not seed demo plugin catalog (%v)\n", err)
+	}
 
 	demoAdmin, err := st.GetUserByUsername("demo-admin")
 	if err != nil {
@@ -170,8 +212,15 @@ func runDemoSeed() {
 			_ = docker.PowerAction(ctx, containerID, "stop")
 		}
 
+		// Image/Env are set to look like a real Paper server (even though the
+		// container backing it is the lightweight alpine fake below) so the
+		// dashboard's type icon and the Plugins tab -- both gated on these
+		// exact fields, see pluginsEligible() -- show up in the demo too.
+		// This is display/routing metadata only; nothing here talks to a real
+		// itzg image.
 		sv := &store.Server{
-			Name: spec.name, Slug: slug, Image: "alpine:latest (demo)",
+			Name: spec.name, Slug: slug, Image: "itzg/minecraft-server",
+			Env:         "TYPE=PAPER\nVERSION=LATEST\nMOTD=" + spec.chat,
 			ContainerID: containerID, ContainerName: containerName,
 			DataPath: dataDir, MemoryMB: 64, PortMappings: "",
 			OwnerID: sql.NullInt64{Int64: demoCustomer.ID, Valid: true},

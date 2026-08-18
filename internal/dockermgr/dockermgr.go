@@ -290,13 +290,13 @@ func (m *Manager) StreamLogs(ctx context.Context, containerID string, onLine fun
 }
 
 type Stats struct {
-	Status      string
-	CPUPercent  float64
-	MemUsageMB  float64
-	MemLimitMB  float64
-	MemPercent  float64
-	NetRxMB     float64
-	NetTxMB     float64
+	Status     string
+	CPUPercent float64
+	MemUsageMB float64
+	MemLimitMB float64
+	MemPercent float64
+	NetRxMB    float64
+	NetTxMB    float64
 }
 
 func (m *Manager) GetStats(ctx context.Context, containerID string) (*Stats, error) {
@@ -422,3 +422,170 @@ func (m *Manager) DropAttachSocket(containerID string) {
 	m.dropAttachLocked(containerID)
 }
 
+// ExecRemovePaths deletes relPaths (each relative to /data, the container's
+// game-data mount) from inside the container as root via docker exec.
+// Needed as a fallback when host-side deletion of bind-mounted game data
+// fails with a permission error -- game images commonly write world files as
+// their own internal UID (itzg's images default to uid 1000), which the
+// host user running this panel often can't delete directly. Exec'ing into
+// the container's own namespace sidesteps that, since docker exec runs as
+// root there regardless of the panel's host UID. The container must be
+// running.
+func (m *Manager) ExecRemovePaths(ctx context.Context, containerID string, relPaths []string) error {
+	if len(relPaths) == 0 {
+		return nil
+	}
+	cli, err := m.client()
+	if err != nil {
+		return err
+	}
+	cmd := []string{"rm", "-rf"}
+	for _, p := range relPaths {
+		cmd = append(cmd, "/data/"+p)
+	}
+	execID, err := cli.ContainerExecCreate(ctx, containerID, types.ExecConfig{
+		Cmd:          cmd,
+		User:         "0",
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return fmt.Errorf("exec create: %w", err)
+	}
+	attachResp, err := cli.ContainerExecAttach(ctx, execID.ID, types.ExecStartCheck{})
+	if err != nil {
+		return fmt.Errorf("exec attach: %w", err)
+	}
+	defer attachResp.Close()
+	output, _ := io.ReadAll(attachResp.Reader)
+	inspect, err := cli.ContainerExecInspect(ctx, execID.ID)
+	if err != nil {
+		return fmt.Errorf("exec inspect: %w", err)
+	}
+	if inspect.ExitCode != 0 {
+		return fmt.Errorf("rm inside container exited %d: %s", inspect.ExitCode, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// ExecWriteFile streams r's contents to destPath (an absolute in-container
+// path, e.g. "/data/plugins/foo.jar.tmp") as root via docker exec + tee.
+// Fallback for the same host/container UID mismatch ExecRemovePaths exists
+// for: itzg's images create files as their own internal uid, which the host
+// panel process often can't write into directly. Uses `tee <path>` rather
+// than a shell redirect so destPath is passed as a literal argv element --
+// no shell involved, so nothing in it needs quoting/escaping regardless of
+// its content. The container must be running.
+func (m *Manager) ExecWriteFile(ctx context.Context, containerID, destPath string, r io.Reader) error {
+	cli, err := m.client()
+	if err != nil {
+		return err
+	}
+	execID, err := cli.ContainerExecCreate(ctx, containerID, types.ExecConfig{
+		Cmd:          []string{"tee", destPath},
+		User:         "0",
+		AttachStdin:  true,
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return fmt.Errorf("exec create: %w", err)
+	}
+	attachResp, err := cli.ContainerExecAttach(ctx, execID.ID, types.ExecStartCheck{})
+	if err != nil {
+		return fmt.Errorf("exec attach: %w", err)
+	}
+	defer attachResp.Close()
+
+	_, copyErr := io.Copy(attachResp.Conn, r)
+	// Half-close so `tee` sees EOF on stdin and exits, without tearing down
+	// the connection we still need to read stdout/stderr from below.
+	if cw, ok := attachResp.Conn.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	} else {
+		_ = attachResp.Conn.Close()
+	}
+	if copyErr != nil {
+		return fmt.Errorf("write to exec stdin: %w", copyErr)
+	}
+
+	output, _ := io.ReadAll(attachResp.Reader)
+	inspect, err := cli.ContainerExecInspect(ctx, execID.ID)
+	if err != nil {
+		return fmt.Errorf("exec inspect: %w", err)
+	}
+	if inspect.ExitCode != 0 {
+		return fmt.Errorf("tee inside container exited %d: %s", inspect.ExitCode, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// ExecRename renames oldPath to newPath (both absolute in-container paths)
+// as root via docker exec -- the atomic-rename half of the ExecWriteFile
+// fallback, so a plugin jar copied through this path is still written to a
+// ".tmp" sibling and renamed into place rather than appearing incrementally
+// at its final name. The container must be running.
+func (m *Manager) ExecRename(ctx context.Context, containerID, oldPath, newPath string) error {
+	cli, err := m.client()
+	if err != nil {
+		return err
+	}
+	execID, err := cli.ContainerExecCreate(ctx, containerID, types.ExecConfig{
+		Cmd:          []string{"mv", oldPath, newPath},
+		User:         "0",
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return fmt.Errorf("exec create: %w", err)
+	}
+	attachResp, err := cli.ContainerExecAttach(ctx, execID.ID, types.ExecStartCheck{})
+	if err != nil {
+		return fmt.Errorf("exec attach: %w", err)
+	}
+	defer attachResp.Close()
+	output, _ := io.ReadAll(attachResp.Reader)
+	inspect, err := cli.ContainerExecInspect(ctx, execID.ID)
+	if err != nil {
+		return fmt.Errorf("exec inspect: %w", err)
+	}
+	if inspect.ExitCode != 0 {
+		return fmt.Errorf("mv inside container exited %d: %s", inspect.ExitCode, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// ExecMkdir creates dir (an absolute in-container path) as root via docker
+// exec, matching mkdir -p semantics (no error if it already exists). Used
+// before ExecWriteFile so the plugins/ fallback works even against a
+// container that's never had a plugin installed and so has no plugins/
+// directory of its own yet. The container must be running.
+func (m *Manager) ExecMkdir(ctx context.Context, containerID, dir string) error {
+	cli, err := m.client()
+	if err != nil {
+		return err
+	}
+	execID, err := cli.ContainerExecCreate(ctx, containerID, types.ExecConfig{
+		Cmd:          []string{"mkdir", "-p", dir},
+		User:         "0",
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return fmt.Errorf("exec create: %w", err)
+	}
+	attachResp, err := cli.ContainerExecAttach(ctx, execID.ID, types.ExecStartCheck{})
+	if err != nil {
+		return fmt.Errorf("exec attach: %w", err)
+	}
+	defer attachResp.Close()
+	output, _ := io.ReadAll(attachResp.Reader)
+	inspect, err := cli.ContainerExecInspect(ctx, execID.ID)
+	if err != nil {
+		return fmt.Errorf("exec inspect: %w", err)
+	}
+	if inspect.ExitCode != 0 {
+		return fmt.Errorf("mkdir inside container exited %d: %s", inspect.ExitCode, strings.TrimSpace(string(output)))
+	}
+	return nil
+}

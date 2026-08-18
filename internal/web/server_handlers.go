@@ -11,13 +11,14 @@ import (
 
 type serverDetailData struct {
 	Common
-	Server *store.Server
-	Status string
+	Server          *store.Server
+	Status          string
+	PluginsEligible bool
 }
 
 func (s *Server) handleServerDetail(w http.ResponseWriter, r *http.Request, user *store.User, sv *store.Server) {
 	status := s.docker.ContainerStatus(r.Context(), sv.ContainerID)
-	data := serverDetailData{Common: s.commonFor(w, r, user), Server: sv, Status: status}
+	data := serverDetailData{Common: s.commonFor(w, r, user), Server: sv, Status: status, PluginsEligible: pluginsEligible(sv)}
 	s.render(w, r, user, sv.Name, "", "server", data)
 }
 
@@ -114,4 +115,3 @@ func (s *Server) handleConsoleSend(w http.ResponseWriter, r *http.Request, user 
 	}
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
-

@@ -1,20 +1,43 @@
 {{define "dashboard"}}
-<h1>Your Servers</h1>
+<div class="hero-banner">
+  <div class="hero-banner-text">
+    <h1>Welcome back, {{.CurrentUser.Username}}</h1>
+    <p>{{if .Servers}}{{.RunningCount}} of {{len .Servers}} server{{if ne (len .Servers) 1}}s{{end}} online{{else}}No servers yet{{end}}</p>
+  </div>
+</div>
 {{if not .Servers}}
   <p class="muted">No servers yet.{{if .CurrentUser.IsAdmin}} <a href="/admin/servers/create">Create one</a>.{{end}}</p>
 {{else}}
 <div class="server-grid">
   {{range .Servers}}
-  <a class="server-card" href="{{.URL}}">
-    <div class="server-card-top">
-      <span class="status-dot status-{{.Status}}"></span>
-      <span class="server-name">{{.Name}}</span>
+  <div class="server-card">
+    <a class="server-card-link" href="{{.URL}}">
+      <div class="server-card-top">
+        {{if .TypeIcon}}<img class="server-card-type-icon" src="/static/img/icons/{{.TypeIcon}}" alt="">{{end}}
+        <span class="status-dot status-{{.Status}}"></span>
+        <span class="server-name">{{.Name}}</span>
+      </div>
+      <div class="server-card-meta">{{.Image}}</div>
+      <div class="server-card-meta">{{.Status}} · {{.MemoryMB}} MB
+        {{if .HasOwner}} · owner: {{.OwnerUsername}}{{end}}
+      </div>
+    </a>
+    <div class="server-card-actions">
+      {{if eq .Status "running"}}
+      <form method="post" action="/server/{{.ID}}/power">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input type="hidden" name="action" value="stop">
+        <button type="submit" class="btn btn-red btn-icon-only" title="Stop"><img src="/static/img/icons/power-stop.svg" alt="Stop"></button>
+      </form>
+      {{else}}
+      <form method="post" action="/server/{{.ID}}/power">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input type="hidden" name="action" value="start">
+        <button type="submit" class="btn btn-green btn-icon-only" title="Start"><img src="/static/img/icons/power-start.svg" alt="Start"></button>
+      </form>
+      {{end}}
     </div>
-    <div class="server-card-meta">{{.Image}}</div>
-    <div class="server-card-meta">{{.Status}} · {{.MemoryMB}} MB
-      {{if .HasOwner}} · owner: {{.OwnerUsername}}{{end}}
-    </div>
-  </a>
+  </div>
   {{end}}
 </div>
 {{end}}

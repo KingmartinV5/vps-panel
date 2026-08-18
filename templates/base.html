@@ -4,15 +4,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{.Title}} · VPS Panel</title>
+  <title>{{.Title}} · KingsEmpire Manage Panel</title>
   <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
   {{if .CurrentUser}}
   <div class="shell">
     <nav class="sidebar">
-      <div class="brand">VPS&nbsp;Panel</div>
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-text">KingsEmpire<small>Manage Panel</small></span></div>
       <a href="/" class="nav-link {{if eq .ActiveNav "dashboard"}}active{{end}}">Servers</a>
+      <a href="/account" class="nav-link {{if eq .ActiveNav "account"}}active{{end}}"><svg class="tab-icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="6.5" r="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3.5 16.5c1-3.3 3.8-5 6.5-5s5.5 1.7 6.5 5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>My Account</a>
       {{if .CurrentUser.IsAdmin}}
       <div class="nav-section">Admin</div>
       <a href="/admin/servers/create" class="nav-link {{if eq .ActiveNav "admin_servers_create"}}active{{end}}">New Server</a>
@@ -20,6 +21,7 @@
       {{end}}
       <div class="sidebar-footer">
         <div class="whoami">{{.CurrentUser.Username}}{{if .CurrentUser.IsAdmin}} <span class="badge">admin</span>{{end}}</div>
+        <a href="mailto:playkingsempire@gmail.com?subject=KingsEmpire%20Support%20Request" class="nav-link"><svg class="tab-icon" viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="4.5" width="15" height="11" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3 5.5 10 11l7-5.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>Contact Support</a>
         <a href="/logout" class="nav-link">Log out</a>
       </div>
     </nav>

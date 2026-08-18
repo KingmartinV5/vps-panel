@@ -28,12 +28,13 @@ type fileRow struct {
 
 type filesData struct {
 	Common
-	Server     *store.Server
-	Path       string
-	PathParts  []string
-	HasParent  bool
-	ParentPath string
-	Entries    []fileRow
+	Server          *store.Server
+	Path            string
+	PathParts       []string
+	HasParent       bool
+	ParentPath      string
+	Entries         []fileRow
+	PluginsEligible bool
 }
 
 func joinRel(path, name string) string {
@@ -82,13 +83,14 @@ func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request, user *s
 	}
 
 	data := filesData{
-		Common:     s.commonFor(w, r, user),
-		Server:     sv,
-		Path:       path,
-		PathParts:  pathParts,
-		HasParent:  hasParent,
-		ParentPath: url.QueryEscape(parent),
-		Entries:    rows,
+		Common:          s.commonFor(w, r, user),
+		Server:          sv,
+		Path:            path,
+		PathParts:       pathParts,
+		HasParent:       hasParent,
+		ParentPath:      url.QueryEscape(parent),
+		Entries:         rows,
+		PluginsEligible: pluginsEligible(sv),
 	}
 	s.render(w, r, user, sv.Name+" · Files", "", "files", data)
 }

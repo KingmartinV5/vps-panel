@@ -46,6 +46,7 @@ type Server struct {
 	DataPath       string
 	MemoryMB       int
 	PortMappings   string
+	Env            string
 	OwnerID        sql.NullInt64
 	CreatedAt      time.Time
 }
@@ -111,7 +112,44 @@ func (s *Store) migrate() error {
 		created_at DATETIME NOT NULL
 	);
 	`
-	_, err := s.db.Exec(schema)
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+	return s.migrateServerEnvColumn()
+}
+
+// migrateServerEnvColumn adds the server.env column for installs that
+// predate it (the raw KEY=VALUE env text a server was created/last edited
+// with -- needed so the admin edit form can round-trip it). SQLite's
+// "ALTER TABLE ... ADD COLUMN IF NOT EXISTS" isn't something we rely on
+// working everywhere, so check first via PRAGMA table_info.
+func (s *Store) migrateServerEnvColumn() error {
+	rows, err := s.db.Query(`PRAGMA table_info(server)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	hasEnv := false
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "env" {
+			hasEnv = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if hasEnv {
+		return nil
+	}
+	_, err = s.db.Exec(`ALTER TABLE server ADD COLUMN env TEXT DEFAULT ''`)
 	return err
 }
 
@@ -201,6 +239,11 @@ func (s *Store) UpdateUserPassword(u *User) error {
 	return err
 }
 
+func (s *Store) UpdateUserAdmin(id int64, isAdmin bool) error {
+	_, err := s.db.Exec(`UPDATE user SET is_admin = ? WHERE id = ?`, isAdmin, id)
+	return err
+}
+
 func (s *Store) DeleteUser(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM user WHERE id = ?`, id)
 	return err
@@ -215,7 +258,7 @@ func (s *Store) CountServersByOwner(ownerID int64) (int, error) {
 func scanServer(row interface{ Scan(...any) error }) (*Server, error) {
 	s := &Server{}
 	if err := row.Scan(&s.ID, &s.Name, &s.Slug, &s.Image, &s.ContainerID, &s.ContainerName,
-		&s.DataPath, &s.MemoryMB, &s.PortMappings, &s.OwnerID, &s.CreatedAt); err != nil {
+		&s.DataPath, &s.MemoryMB, &s.PortMappings, &s.Env, &s.OwnerID, &s.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -224,7 +267,7 @@ func scanServer(row interface{ Scan(...any) error }) (*Server, error) {
 	return s, nil
 }
 
-const serverCols = `id, name, slug, image, container_id, container_name, data_path, memory_mb, port_mappings, owner_id, created_at`
+const serverCols = `id, name, slug, image, container_id, container_name, data_path, memory_mb, port_mappings, env, owner_id, created_at`
 
 func (s *Store) GetServer(id int64) (*Server, error) {
 	row := s.db.QueryRow(fmt.Sprintf(`SELECT %s FROM server WHERE id = ?`, serverCols), id)
@@ -272,8 +315,8 @@ func (s *Store) ListServersByOwner(ownerID int64) ([]*Server, error) {
 
 func (s *Store) CreateServer(sv *Server) (int64, error) {
 	res, err := s.db.Exec(
-		fmt.Sprintf(`INSERT INTO server (name, slug, image, container_id, container_name, data_path, memory_mb, port_mappings, owner_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		sv.Name, sv.Slug, sv.Image, sv.ContainerID, sv.ContainerName, sv.DataPath, sv.MemoryMB, sv.PortMappings, sv.OwnerID, time.Now().UTC(),
+		`INSERT INTO server (name, slug, image, container_id, container_name, data_path, memory_mb, port_mappings, env, owner_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sv.Name, sv.Slug, sv.Image, sv.ContainerID, sv.ContainerName, sv.DataPath, sv.MemoryMB, sv.PortMappings, sv.Env, sv.OwnerID, time.Now().UTC(),
 	)
 	if err != nil {
 		return 0, err
@@ -281,6 +324,17 @@ func (s *Store) CreateServer(sv *Server) (int64, error) {
 	id, err := res.LastInsertId()
 	sv.ID = id
 	return id, err
+}
+
+// UpdateServer updates the mutable fields of an existing server row (used
+// after recreating its container with new settings). ID/Slug/CreatedAt/
+// DataPath are not touched.
+func (s *Store) UpdateServer(sv *Server) error {
+	_, err := s.db.Exec(
+		`UPDATE server SET name = ?, image = ?, container_id = ?, container_name = ?, memory_mb = ?, port_mappings = ?, env = ?, owner_id = ? WHERE id = ?`,
+		sv.Name, sv.Image, sv.ContainerID, sv.ContainerName, sv.MemoryMB, sv.PortMappings, sv.Env, sv.OwnerID, sv.ID,
+	)
+	return err
 }
 
 func (s *Store) DeleteServer(id int64) error {

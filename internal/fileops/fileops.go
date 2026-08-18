@@ -215,6 +215,35 @@ func ResolveDownload(root, rel string) (string, error) {
 	return target, nil
 }
 
+// KnownWorldDirs are the well-known world-data directory names across the
+// server images this panel supports. ResetWorld removes whichever of these
+// exist under a server's data dir and leaves everything else (configs,
+// plugins, mods, whitelist, etc.) alone. Different server types won't have
+// all of these -- missing ones are silently skipped. Exported so callers
+// have the same list available for the docker-exec fallback in ResetWorld's
+// doc comment below.
+var KnownWorldDirs = []string{"world", "world_nether", "world_the_end", "worlds"}
+
+// ResetWorld deletes the known world-data subdirectories under root,
+// ignoring any that don't exist. Goes through Join like everything else
+// here, so it can never be pointed outside the server's own data dir.
+//
+// This can fail with a permission error even though the panel process is
+// the one that created the data dir: game images commonly write world files
+// as their own internal UID (e.g. itzg's images default to uid 1000), which
+// won't match the host user running this panel. Callers that hit that should
+// fall back to deleting from inside the container itself (docker exec runs
+// as root there regardless of the panel's host UID) -- see
+// dockermgr.Manager.ExecRemovePaths, built for exactly this.
+func ResetWorld(root string) error {
+	for _, name := range KnownWorldDirs {
+		if err := DeletePath(root, name); err != nil && !errors.Is(err, ErrPathSecurity) {
+			return fmt.Errorf("removing %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 // --- Backups -----------------------------------------------------------
 
 func CreateBackup(backupsRoot, serverSlug, dataDir string) (string, error) {

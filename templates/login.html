@@ -2,7 +2,10 @@
 <div class="login-wrap">
   <form class="login-card" method="post">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-    <div class="brand center">VPS&nbsp;Panel</div>
+    <div class="brand center login-brand">
+      <span class="brand-mark brand-mark-lg" aria-hidden="true"></span>
+      <span class="brand-text"><b>KingsEmpire</b><small>Manage Panel</small></span>
+    </div>
     <input type="text" name="username" placeholder="Username" autofocus required>
     <input type="password" name="password" placeholder="Password" required>
     <button type="submit">Log in</button>

@@ -1,4 +1,4 @@
-# VPS Panel
+# KingsEmpire Manage Panel
 
 A small Pterodactyl-style web panel for managing game/app servers that run
 as **Docker containers on this VPS**. Lets you (admin) provision containers
@@ -139,6 +139,7 @@ docker ps   # should not error / require sudo
 | `PANEL_DATABASE_URL` | sqlite in `instance/panel.db` | database URI |
 | `PANEL_SERVERS_ROOT` | `data/servers` | where each server's `/data` bind mount lives |
 | `PANEL_BACKUPS_ROOT` | `data/backups` | where `.tar.gz` backups are written |
+| `PANEL_PLUGIN_CATALOG_ROOT` | `data/plugin-catalog` | admin-curated plugin jars + `catalog.json` for the customer-facing Plugins tab (Paper/Spigot/Purpur only) — see the README in that directory |
 | `PANEL_ALLOWED_IMAGES` | `itzg/minecraft-server,itzg/minecraft-bedrock-server,itzg/mc-proxy` | comma-separated image allowlist for server creation |
 | `PANEL_MAX_UPLOAD_MB` | `250` | max file manager upload size |
 | `PANEL_MAX_EDIT_MB` | `2` | max file size editable in the browser (bigger files: download only) |
@@ -159,7 +160,7 @@ Example systemd unit:
 
 ```ini
 [Unit]
-Description=VPS Panel
+Description=KingsEmpire Manage Panel
 After=network.target docker.service
 
 [Service]

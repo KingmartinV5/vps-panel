@@ -5,6 +5,7 @@
     <a class="tab" href="/server/{{.Server.ID}}">Console</a>
     <a class="tab" href="/server/{{.Server.ID}}/files">Files</a>
     <span class="tab active">Backups</span>
+    {{if .PluginsEligible}}<a class="tab" href="/server/{{.Server.ID}}/plugins">Plugins</a>{{end}}
   </div>
 </div>
 

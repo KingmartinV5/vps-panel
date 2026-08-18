@@ -16,8 +16,9 @@ type backupRow struct {
 
 type backupsData struct {
 	Common
-	Server  *store.Server
-	Backups []backupRow
+	Server          *store.Server
+	Backups         []backupRow
+	PluginsEligible bool
 }
 
 func (s *Server) handleBackupsList(w http.ResponseWriter, r *http.Request, user *store.User, sv *store.Server) {
@@ -34,7 +35,7 @@ func (s *Server) handleBackupsList(w http.ResponseWriter, r *http.Request, user 
 			MTimeStr:  b.MTime.Format("2006-01-02 15:04"),
 		})
 	}
-	data := backupsData{Common: s.commonFor(w, r, user), Server: sv, Backups: rows}
+	data := backupsData{Common: s.commonFor(w, r, user), Server: sv, Backups: rows, PluginsEligible: pluginsEligible(sv)}
 	s.render(w, r, user, sv.Name+" · Backups", "", "backups", data)
 }
 

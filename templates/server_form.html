@@ -1,0 +1,178 @@
+{{define "server_form"}}
+<h1>{{if eq .Mode "edit"}}Edit Server{{else}}Create Server{{end}}</h1>
+
+{{if eq .Mode "edit"}}
+<p class="muted">Saving recreates this server's container (Docker settings are baked in at creation), so it will briefly restart. World and data files are preserved.</p>
+{{end}}
+
+<form method="post" action="{{.FormAction}}" class="panel-form server-form">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+  <label>Name
+    <input type="text" name="name" value="{{.FormName}}" required>
+  </label>
+
+  <label>Server type</label>
+  <div class="type-picker">
+    {{range .Types}}
+    <label class="type-card">
+      <input type="radio" name="image" value="{{.Image}}" {{if eq $.FormImage .Image}}checked{{end}} required>
+      {{if .Icon}}<img src="/static/img/icons/{{.Icon}}" alt="" class="type-card-icon">{{end}}
+      <span class="type-card-label">{{.Label}}</span>
+    </label>
+    {{end}}
+  </div>
+
+  <div class="friendly-fields" data-for-image="itzg/minecraft-server">
+    <h3>Minecraft: Java Edition settings</h3>
+    <label>Server software
+      <div class="software-picker">
+        <label class="software-badge"><input type="radio" name="java_software" value="VANILLA" {{if eq .JavaSoftware "VANILLA"}}checked{{end}}><img src="/static/img/icons/software-vanilla.svg" alt="">Vanilla</label>
+        <label class="software-badge"><input type="radio" name="java_software" value="PAPER" {{if eq .JavaSoftware "PAPER"}}checked{{end}}><img src="/static/img/icons/software-paper.svg" alt="">Paper</label>
+        <label class="software-badge"><input type="radio" name="java_software" value="SPIGOT" {{if eq .JavaSoftware "SPIGOT"}}checked{{end}}><img src="/static/img/icons/software-spigot.svg" alt="">Spigot</label>
+        <label class="software-badge"><input type="radio" name="java_software" value="FABRIC" {{if eq .JavaSoftware "FABRIC"}}checked{{end}}><img src="/static/img/icons/software-fabric.svg" alt="">Fabric</label>
+        <label class="software-badge"><input type="radio" name="java_software" value="FORGE" {{if eq .JavaSoftware "FORGE"}}checked{{end}}><img src="/static/img/icons/software-forge.svg" alt="">Forge</label>
+        <label class="software-badge"><input type="radio" name="java_software" value="PURPUR" {{if eq .JavaSoftware "PURPUR"}}checked{{end}}><img src="/static/img/icons/software-purpur.svg" alt="">Purpur</label>
+      </div>
+    </label>
+
+    <div class="field-row">
+      <label>Version
+        <input type="text" name="java_version" value="{{.JavaVersion}}" list="mc-versions" placeholder="LATEST">
+        <datalist id="mc-versions">
+          <option value="LATEST"><option value="1.21.1"><option value="1.20.4">
+          <option value="1.20.1"><option value="1.19.4"><option value="1.18.2"><option value="1.16.5">
+        </datalist>
+      </label>
+      <label>Server port
+        <input type="number" name="java_port" value="{{.JavaPort}}" min="1" max="65535">
+      </label>
+    </div>
+
+    <div class="field-row">
+      <label>Difficulty
+        <select name="java_difficulty">
+          {{range $v := (slice "peaceful" "easy" "normal" "hard")}}
+          <option value="{{$v}}" {{if eq $.JavaDifficulty $v}}selected{{end}}>{{$v}}</option>
+          {{end}}
+        </select>
+      </label>
+      <label>Game mode
+        <select name="java_mode">
+          {{range $v := (slice "survival" "creative" "adventure" "spectator")}}
+          <option value="{{$v}}" {{if eq $.JavaMode $v}}selected{{end}}>{{$v}}</option>
+          {{end}}
+        </select>
+      </label>
+      <label>Max players
+        <input type="number" name="java_max_players" value="{{.JavaMaxPlayers}}" min="1">
+      </label>
+    </div>
+
+    <label>MOTD
+      <input type="text" name="java_motd" value="{{.JavaMOTD}}">
+    </label>
+
+    <label class="checkbox-label"><input type="checkbox" name="java_online_mode" {{if .JavaOnlineMode}}checked{{end}}> Online mode (verify Mojang accounts)</label>
+
+    <label>Whitelist (comma-separated usernames, optional -- leave blank to disable)
+      <input type="text" name="java_whitelist" value="{{.JavaWhitelist}}" placeholder="Steve, Alex">
+    </label>
+  </div>
+
+  <div class="friendly-fields" data-for-image="itzg/minecraft-bedrock-server">
+    <h3>Minecraft: Bedrock Edition settings</h3>
+    <div class="field-row">
+      <label>Server name
+        <input type="text" name="bedrock_server_name" value="{{.BedrockServerName}}">
+      </label>
+      <label>Server port
+        <input type="number" name="bedrock_port" value="{{.BedrockPort}}" min="1" max="65535">
+      </label>
+    </div>
+    <div class="field-row">
+      <label>Game mode
+        <select name="bedrock_gamemode">
+          {{range $v := (slice "survival" "creative" "adventure")}}
+          <option value="{{$v}}" {{if eq $.BedrockGamemode $v}}selected{{end}}>{{$v}}</option>
+          {{end}}
+        </select>
+      </label>
+      <label>Difficulty
+        <select name="bedrock_difficulty">
+          {{range $v := (slice "peaceful" "easy" "normal" "hard")}}
+          <option value="{{$v}}" {{if eq $.BedrockDifficulty $v}}selected{{end}}>{{$v}}</option>
+          {{end}}
+        </select>
+      </label>
+      <label>Max players
+        <input type="number" name="bedrock_max_players" value="{{.BedrockMaxPlayers}}" min="1">
+      </label>
+    </div>
+  </div>
+
+  <div class="friendly-fields" data-for-image="itzg/mc-proxy">
+    <h3>Proxy settings</h3>
+    <div class="field-row">
+      <label>Proxy type
+        <select name="proxy_type">
+          {{range $v := (slice "velocity" "bungeecord" "waterfall")}}
+          <option value="{{$v}}" {{if eq $.ProxyType $v}}selected{{end}}>{{$v}}</option>
+          {{end}}
+        </select>
+      </label>
+      <label>Server port
+        <input type="number" name="proxy_port" value="{{.ProxyPort}}" min="1" max="65535">
+      </label>
+    </div>
+  </div>
+
+  <label>Memory limit (MB)
+    <input type="number" name="memory_mb" min="256" step="256" value="{{.FormMemory}}" required id="memory-mb-input">
+  </label>
+  <div class="memory-presets">
+    <button type="button" onclick="document.getElementById('memory-mb-input').value=1024">1GB</button>
+    <button type="button" onclick="document.getElementById('memory-mb-input').value=2048">2GB</button>
+    <button type="button" onclick="document.getElementById('memory-mb-input').value=4096">4GB</button>
+    <button type="button" onclick="document.getElementById('memory-mb-input').value=8192">8GB</button>
+  </div>
+
+  <label>Owner (customer)
+    <select name="owner_id">
+      <option value="">— unassigned —</option>
+      {{range .Customers}}
+      <option value="{{.ID}}" {{if eq $.FormOwnerID (idstr .ID)}}selected{{end}}>{{.Username}}</option>
+      {{end}}
+    </select>
+  </label>
+
+  <details class="advanced">
+    <summary>Advanced (raw)</summary>
+    <p class="advanced-hint">Anything set here is applied on top of the friendly fields above -- use it to override a value or add settings the form above doesn't cover.</p>
+    <label>Extra port mappings (one per line, hostport:containerport[/tcp|udp])
+      <textarea name="adv_ports" rows="3" placeholder="25566:25566/udp">{{.AdvPorts}}</textarea>
+    </label>
+    <label>Extra environment variables (one per line, KEY=VALUE)
+      <textarea name="adv_env" rows="4" placeholder="VIEW_DISTANCE=10">{{.AdvEnv}}</textarea>
+    </label>
+  </details>
+
+  <button type="submit" class="btn btn-blue">{{if eq .Mode "edit"}}Save Changes{{else}}Create Server{{end}}</button>
+</form>
+
+<script>
+(function() {
+  function updateVisibility() {
+    var selected = document.querySelector('input[name=image]:checked');
+    var image = selected ? selected.value : '';
+    document.querySelectorAll('.friendly-fields').forEach(function(el) {
+      el.style.display = (el.dataset.forImage === image) ? '' : 'none';
+    });
+  }
+  document.querySelectorAll('input[name=image]').forEach(function(el) {
+    el.addEventListener('change', updateVisibility);
+  });
+  updateVisibility();
+})();
+</script>
+{{end}}

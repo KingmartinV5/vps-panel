@@ -1,0 +1,26 @@
+{{define "admin_edit_user"}}
+<h1>Edit {{.TargetUser.Username}}</h1>
+
+<form method="post" action="/admin/users/{{.TargetUser.ID}}/edit" class="panel-form">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <label>New password (leave blank to keep current)
+    <input type="password" name="password" minlength="8" placeholder="••••••••">
+  </label>
+  <label class="checkbox-label"><input type="checkbox" name="is_admin" {{if .TargetUser.IsAdmin}}checked{{end}}> Admin access</label>
+  <button type="submit" class="btn btn-blue">Save</button>
+</form>
+
+<h2>Servers owned by {{.TargetUser.Username}}</h2>
+{{if not .Servers}}
+<p class="muted">None.</p>
+{{else}}
+<table class="file-table">
+  <thead><tr><th>Name</th><th></th></tr></thead>
+  <tbody>
+    {{range .Servers}}
+    <tr><td>{{.Name}}</td><td><a href="/server/{{.ID}}">View</a></td></tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}
+{{end}}

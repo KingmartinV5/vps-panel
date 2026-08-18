@@ -12,16 +12,17 @@ import (
 )
 
 type Config struct {
-	BaseDir       string
-	InstanceDir   string
-	SecretKey     []byte
-	DatabaseURL   string
-	ServersRoot   string
-	BackupsRoot   string
-	AllowedImages []string
-	MaxUploadMB   int
-	MaxEditMB     int
-	ForceSSL      bool
+	BaseDir           string
+	InstanceDir       string
+	SecretKey         []byte
+	DatabaseURL       string
+	ServersRoot       string
+	BackupsRoot       string
+	PluginCatalogRoot string
+	AllowedImages     []string
+	MaxUploadMB       int
+	MaxEditMB         int
+	ForceSSL          bool
 }
 
 // Load builds a Config rooted at baseDir (the directory containing the binary's
@@ -40,6 +41,7 @@ func Load(baseDir string) (*Config, error) {
 	dbURL := getenv("PANEL_DATABASE_URL", filepath.Join(instanceDir, "panel.db"))
 	serversRoot := getenv("PANEL_SERVERS_ROOT", filepath.Join(baseDir, "data", "servers"))
 	backupsRoot := getenv("PANEL_BACKUPS_ROOT", filepath.Join(baseDir, "data", "backups"))
+	pluginCatalogRoot := getenv("PANEL_PLUGIN_CATALOG_ROOT", filepath.Join(baseDir, "data", "plugin-catalog"))
 
 	rawImages := getenv("PANEL_ALLOWED_IMAGES", "itzg/minecraft-server,itzg/minecraft-bedrock-server,itzg/mc-proxy")
 	var allowed []string
@@ -60,16 +62,17 @@ func Load(baseDir string) (*Config, error) {
 	}
 
 	return &Config{
-		BaseDir:       baseDir,
-		InstanceDir:   instanceDir,
-		SecretKey:     secretKey,
-		DatabaseURL:   dbURL,
-		ServersRoot:   serversRoot,
-		BackupsRoot:   backupsRoot,
-		AllowedImages: allowed,
-		MaxUploadMB:   maxUpload,
-		MaxEditMB:     maxEdit,
-		ForceSSL:      getenv("PANEL_FORCE_SSL", "0") == "1",
+		BaseDir:           baseDir,
+		InstanceDir:       instanceDir,
+		SecretKey:         secretKey,
+		DatabaseURL:       dbURL,
+		ServersRoot:       serversRoot,
+		BackupsRoot:       backupsRoot,
+		PluginCatalogRoot: pluginCatalogRoot,
+		AllowedImages:     allowed,
+		MaxUploadMB:       maxUpload,
+		MaxEditMB:         maxEdit,
+		ForceSSL:          getenv("PANEL_FORCE_SSL", "0") == "1",
 	}, nil
 }
 

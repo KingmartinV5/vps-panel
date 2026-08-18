@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# wbdash -- self-installing launcher for the VPS panel.
+# wbdash -- self-installing launcher for the KingsEmpire Manage Panel.
 #
 # First run (as root or via sudo):   sudo ./wbdash install
 # After that, from anywhere:         wbdash
@@ -35,7 +35,28 @@ DEMO_LOGFILE="$APP_DIR/instance/demo-panel.log"
 DEMO_DB_URL="sqlite:///$APP_DIR/instance/demo.db"
 DEMO_SERVERS_ROOT="$APP_DIR/data/demo-servers"
 DEMO_BACKUPS_ROOT="$APP_DIR/data/demo-backups"
+DEMO_PLUGIN_CATALOG_ROOT="$APP_DIR/data/demo-plugin-catalog"
 CLOUDFLARED_BIN="$APP_DIR/bin/cloudflared"
+
+# Separate password from DEBUG_PASSWORD on purpose -- these gate two very
+# different things (a throwaway public demo vs. touching real /etc config on
+# a production box) and shouldn't be forced to move together later.
+PRODUCTION_PASSWORD="1408"
+PROD_CONF_FILE="$APP_DIR/instance/production.conf"
+TLS_DIR="$APP_DIR/instance/tls"
+
+PROD_CONFIGURED=0
+PROD_WEBSERVER="none"
+PROD_TLS="none"
+PROD_DOMAIN=""
+PROD_VHOST_PATH=""
+if [[ -f "$PROD_CONF_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$PROD_CONF_FILE"
+fi
+
+UI_BACKEND=""
+UI_RESULT=""
 
 PKG_MGR=""
 
@@ -61,7 +82,7 @@ bg_run() {
 
 print_help() {
   cat <<EOF
-wbdash -- VPS panel installer/launcher
+wbdash -- KingsEmpire Manage Panel installer/launcher
 
 USAGE
   wbdash [command] [flags]
@@ -119,6 +140,20 @@ COMMANDS
                               Demo login: demo-admin / demo, password
                               demo1408.
       debug stop                Stop the background demo panel process.
+
+  production, --production   Password-gated production setup wizard. First
+                              run walks through an interactive menu (needs
+                              root -- re-execs itself with sudo): pick nginx
+                              or Apache as a reverse proxy, optionally
+                              install it, optionally get it a TLS cert
+                              (Let's Encrypt or self-signed), and bind a
+                              domain/IP. After that, the panel is rebound to
+                              127.0.0.1 (only reachable through the proxy)
+                              and PANEL_FORCE_SSL is set if TLS is on.
+                              Later runs just verify everything's still up
+                              unless you pass --reconfigure. Password-gated
+                              on every run (not just the first).
+      production --reconfigure  Re-run the wizard even if already configured.
 
   help, -h, --help           This message.
 
@@ -394,6 +429,7 @@ cmd_debug() {
   PANEL_DATABASE_URL="$DEMO_DB_URL" \
   PANEL_SERVERS_ROOT="$DEMO_SERVERS_ROOT" \
   PANEL_BACKUPS_ROOT="$DEMO_BACKUPS_ROOT" \
+  PANEL_PLUGIN_CATALOG_ROOT="$DEMO_PLUGIN_CATALOG_ROOT" \
     "$PANEL_BIN" demo-seed
 
   mkdir -p "$(dirname "$DEMO_PIDFILE")"
@@ -408,6 +444,7 @@ cmd_debug() {
       PANEL_DATABASE_URL="$DEMO_DB_URL" \
       PANEL_SERVERS_ROOT="$DEMO_SERVERS_ROOT" \
       PANEL_BACKUPS_ROOT="$DEMO_BACKUPS_ROOT" \
+      PANEL_PLUGIN_CATALOG_ROOT="$DEMO_PLUGIN_CATALOG_ROOT" \
       "$PANEL_BIN" serve
     sleep 1
     log "demo panel running on port $DEMO_PORT"
@@ -453,6 +490,568 @@ cmd_debug() {
   wait "$tunnel_pid" 2>/dev/null || true
 }
 
+# --- Production hardening wizard -------------------------------------------
+#
+# `wbdash production` fronts the panel with a real reverse proxy (nginx or
+# Apache), optionally gets it a TLS cert, and rebinds the panel itself to
+# 127.0.0.1 so it's only reachable through that proxy. Password-gated on
+# every run; the interactive wizard itself only runs once (state cached in
+# $PROD_CONF_FILE) unless --reconfigure is passed.
+
+# try_pkg_install is pkg_install's non-fatal twin: pkg_install calls die() on
+# an unsupported package manager or a failed install, which would kill the
+# whole wizard over an optional component (nginx/apache/certbot/dialog).
+# Everything in this section that's "nice to have, degrade gracefully" goes
+# through this instead.
+try_pkg_install() {
+  case "$PKG_MGR" in
+    apt) DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" ;;
+    dnf) dnf install -y "$@" ;;
+    yum) yum install -y "$@" ;;
+    pacman) pacman -Sy --noconfirm "$@" ;;
+    apk) apk add --no-cache "$@" ;;
+    zypper) zypper --non-interactive install "$@" ;;
+    *) return 1 ;;
+  esac
+}
+
+# --- Tiny UI abstraction: dialog(1) TUI with a plain-prompt fallback -------
+# Every wizard step goes through ui_menu/ui_yesno/ui_input/ui_msg so the
+# actual wizard logic below doesn't care which backend rendered it. All of
+# them set $UI_RESULT (menu/input) rather than echoing, so callers can use
+# them without a subshell. Cancel (ESC) is a normal outcome, not an error --
+# callers must not invoke these bare under `set -e`; always via `if` or
+# `... || true`, then check $UI_RESULT.
+
+ensure_dialog() {
+  if command -v dialog >/dev/null 2>&1; then
+    UI_BACKEND="dialog"
+    return
+  fi
+  log "installing 'dialog' for the interactive setup menu..."
+  if try_pkg_install dialog && command -v dialog >/dev/null 2>&1; then
+    UI_BACKEND="dialog"
+  else
+    log "warning: couldn't install 'dialog' -- falling back to plain y/n prompts"
+    UI_BACKEND="plain"
+  fi
+}
+
+ui_menu() {
+  # ui_menu <title> <prompt> <tag1> <label1> [<tag2> <label2> ...]
+  local title="$1" prompt="$2"
+  shift 2
+  UI_RESULT=""
+  if [[ "$UI_BACKEND" == "dialog" ]]; then
+    UI_RESULT="$(dialog --backtitle "KingsEmpire Manage Panel -- Production Setup" \
+      --title "$title" --menu "$prompt" 16 70 6 "$@" 3>&1 1>&2 2>&3)" || true
+    clear
+  else
+    echo
+    echo "== $title =="
+    echo "$prompt"
+    local args=("$@") i=0
+    while [[ $i -lt ${#args[@]} ]]; do
+      echo "  ${args[$i]}) ${args[$((i+1))]}"
+      i=$((i+2))
+    done
+    read -r -p "Choice: " UI_RESULT
+  fi
+}
+
+ui_yesno() {
+  local prompt="$1"
+  if [[ "$UI_BACKEND" == "dialog" ]]; then
+    dialog --backtitle "KingsEmpire Manage Panel -- Production Setup" --yesno "$prompt" 10 70
+    local rc=$?
+    clear
+    return $rc
+  else
+    local reply
+    read -r -p "$prompt [y/N] " reply
+    case "$reply" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+  fi
+}
+
+ui_input() {
+  local prompt="$1" default="${2:-}"
+  UI_RESULT=""
+  if [[ "$UI_BACKEND" == "dialog" ]]; then
+    UI_RESULT="$(dialog --backtitle "KingsEmpire Manage Panel -- Production Setup" \
+      --inputbox "$prompt" 10 70 "$default" 3>&1 1>&2 2>&3)" || true
+    clear
+  else
+    local val
+    read -r -p "$prompt${default:+ [$default]}: " val
+    UI_RESULT="${val:-$default}"
+  fi
+}
+
+ui_msg() {
+  local msg="$1"
+  if [[ "$UI_BACKEND" == "dialog" ]]; then
+    dialog --backtitle "KingsEmpire Manage Panel -- Production Setup" --msgbox "$msg" 14 72
+    clear
+  else
+    echo
+    echo "$msg"
+    echo
+  fi
+}
+
+# --- Web server config generation ------------------------------------------
+
+# Maps a chosen "nginx"/"apache" choice to the right package + service unit
+# name for the detected distro. Sets $WS_PKG and $WS_SVC. The service name
+# also doubles as the installed-binary name we probe with `command -v`
+# (true for nginx everywhere, apache2 on Debian/Alpine/SUSE, httpd on
+# RHEL-likes and Arch).
+webserver_pkg_and_svc() {
+  local ws="$1"
+  case "$ws:$PKG_MGR" in
+    nginx:*) WS_PKG="nginx"; WS_SVC="nginx" ;;
+    apache:apt) WS_PKG="apache2"; WS_SVC="apache2" ;;
+    apache:dnf|apache:yum) WS_PKG="httpd"; WS_SVC="httpd" ;;
+    apache:pacman) WS_PKG="apache"; WS_SVC="httpd" ;;
+    apache:apk) WS_PKG="apache2"; WS_SVC="apache2" ;;
+    apache:zypper) WS_PKG="apache2"; WS_SVC="apache2" ;;
+    *) WS_PKG="$ws"; WS_SVC="$ws" ;;
+  esac
+}
+
+resolve_nginx_conf_path() {
+  if [[ -d /etc/nginx/conf.d ]]; then
+    NGINX_CONF_PATH="/etc/nginx/conf.d/kingsempire-panel.conf"
+  elif [[ -d /etc/nginx/sites-available ]]; then
+    NGINX_CONF_PATH="/etc/nginx/sites-available/kingsempire-panel"
+  else
+    NGINX_CONF_PATH="/etc/nginx/kingsempire-panel.conf"
+  fi
+}
+
+resolve_apache_conf_path() {
+  if [[ -d /etc/apache2/sites-available ]]; then
+    APACHE_CONF_PATH="/etc/apache2/sites-available/kingsempire-panel.conf"
+  elif [[ -d /etc/httpd/conf.d ]]; then
+    APACHE_CONF_PATH="/etc/httpd/conf.d/kingsempire-panel.conf"
+  elif [[ -d /etc/apache2/conf.d ]]; then
+    APACHE_CONF_PATH="/etc/apache2/conf.d/kingsempire-panel.conf"
+  else
+    APACHE_CONF_PATH="/etc/apache2/kingsempire-panel.conf"
+  fi
+}
+
+# write_vhost <nginx|apache> <domain> <port> <none|selfsigned>
+# ("letsencrypt" mode isn't handled here -- certbot rewrites the plain-HTTP
+# vhost written by the "none" mode itself, via its --nginx/--apache plugin.)
+write_vhost() {
+  local webserver="$1" domain="$2" port="$3" mode="$4"
+  if [[ "$webserver" == "nginx" ]]; then
+    write_nginx_vhost "$domain" "$port" "$mode"
+  else
+    write_apache_vhost "$domain" "$port" "$mode"
+  fi
+}
+
+write_nginx_vhost() {
+  local domain="$1" port="$2" mode="$3"
+  resolve_nginx_conf_path
+  mkdir -p "$(dirname "$NGINX_CONF_PATH")"
+  # proxy_buffering off + a long proxy_read_timeout matter here: the console
+  # is a long-lived Server-Sent-Events connection (see
+  # internal/web/server_handlers.go's handleConsoleStream), and nginx's
+  # 60s default read timeout plus response buffering would otherwise cut
+  # every console tab after a minute of no new log lines.
+  if [[ "$mode" == "selfsigned" ]]; then
+    cat > "$NGINX_CONF_PATH" <<EOF
+server {
+    listen 80;
+    server_name $domain;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name $domain;
+
+    ssl_certificate     $TLS_DIR/selfsigned.crt;
+    ssl_certificate_key $TLS_DIR/selfsigned.key;
+
+    location / {
+        proxy_pass http://127.0.0.1:$port;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+    }
+}
+EOF
+  else
+    cat > "$NGINX_CONF_PATH" <<EOF
+server {
+    listen 80;
+    server_name $domain;
+
+    location / {
+        proxy_pass http://127.0.0.1:$port;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+    }
+}
+EOF
+  fi
+  if [[ "$NGINX_CONF_PATH" == *sites-available* ]]; then
+    mkdir -p /etc/nginx/sites-enabled
+    ln -sf "$NGINX_CONF_PATH" "/etc/nginx/sites-enabled/$(basename "$NGINX_CONF_PATH")"
+  fi
+  VHOST_PATH="$NGINX_CONF_PATH"
+  log "wrote nginx config: $NGINX_CONF_PATH"
+}
+
+write_apache_vhost() {
+  local domain="$1" port="$2" mode="$3"
+  resolve_apache_conf_path
+  mkdir -p "$(dirname "$APACHE_CONF_PATH")"
+  if [[ "$mode" == "selfsigned" ]]; then
+    cat > "$APACHE_CONF_PATH" <<EOF
+<VirtualHost *:80>
+    ServerName $domain
+    Redirect permanent / https://$domain/
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName $domain
+    SSLEngine on
+    SSLCertificateFile $TLS_DIR/selfsigned.crt
+    SSLCertificateKeyFile $TLS_DIR/selfsigned.key
+
+    ProxyPreserveHost On
+    ProxyPass / http://127.0.0.1:$port/
+    ProxyPassReverse / http://127.0.0.1:$port/
+    Timeout 3600
+</VirtualHost>
+EOF
+  else
+    cat > "$APACHE_CONF_PATH" <<EOF
+<VirtualHost *:80>
+    ServerName $domain
+    ProxyPreserveHost On
+    ProxyPass / http://127.0.0.1:$port/
+    ProxyPassReverse / http://127.0.0.1:$port/
+    Timeout 3600
+</VirtualHost>
+EOF
+  fi
+  if command -v a2enmod >/dev/null 2>&1; then
+    a2enmod proxy proxy_http ssl >/dev/null 2>&1 || true
+  fi
+  if command -v a2ensite >/dev/null 2>&1 && [[ "$APACHE_CONF_PATH" == *sites-available* ]]; then
+    a2ensite "$(basename "$APACHE_CONF_PATH")" >/dev/null 2>&1 || true
+  fi
+  VHOST_PATH="$APACHE_CONF_PATH"
+  log "wrote apache config: $APACHE_CONF_PATH"
+}
+
+# Syntax-checks the generated config, then (only if that passes) enables and
+# (re)starts the service. Returns 1 without touching the running service if
+# the check fails, so a bad generated config never takes down a
+# previously-working proxy.
+reload_webserver() {
+  local webserver="$1"
+  webserver_pkg_and_svc "$webserver"
+  if [[ "$webserver" == "nginx" ]] && command -v nginx >/dev/null 2>&1; then
+    if ! nginx -t 2>&1 | tee /tmp/wbdash-nginx-test.log 1>&2; then
+      log "nginx config test failed -- see above"
+      return 1
+    fi
+  elif [[ "$webserver" == "apache" ]]; then
+    local testcmd=""
+    command -v apachectl >/dev/null 2>&1 && testcmd=apachectl
+    [[ -z "$testcmd" ]] && command -v apache2ctl >/dev/null 2>&1 && testcmd=apache2ctl
+    [[ -z "$testcmd" ]] && command -v httpd >/dev/null 2>&1 && testcmd=httpd
+    if [[ -n "$testcmd" ]] && ! "$testcmd" -t 2>&1 | tee /tmp/wbdash-apache-test.log 1>&2; then
+      log "apache config test failed -- see above"
+      return 1
+    fi
+  fi
+  systemctl enable --now "$WS_SVC" >/dev/null 2>&1 \
+    || systemctl restart "$WS_SVC" >/dev/null 2>&1 \
+    || service "$WS_SVC" restart >/dev/null 2>&1 \
+    || true
+  return 0
+}
+
+# --- TLS ---------------------------------------------------------------
+
+generate_selfsigned_cert() {
+  local domain="$1" san
+  mkdir -p "$TLS_DIR"
+  chmod 750 "$TLS_DIR" 2>/dev/null || true
+  if [[ "$domain" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then san="IP:$domain"; else san="DNS:$domain"; fi
+  log "generating a self-signed certificate for $domain (365 days)..."
+  openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout "$TLS_DIR/selfsigned.key" -out "$TLS_DIR/selfsigned.crt" \
+    -subj "/CN=$domain" -addext "subjectAltName=$san" >/tmp/wbdash-openssl.log 2>&1 \
+  || openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout "$TLS_DIR/selfsigned.key" -out "$TLS_DIR/selfsigned.crt" \
+    -subj "/CN=$domain" >/tmp/wbdash-openssl.log 2>&1 \
+  || die "openssl failed to generate a self-signed certificate -- see /tmp/wbdash-openssl.log"
+  chmod 644 "$TLS_DIR/selfsigned.crt"
+  chmod 640 "$TLS_DIR/selfsigned.key"
+  log "self-signed cert: $TLS_DIR/selfsigned.crt"
+}
+
+# obtain_letsencrypt_cert <nginx|apache> <domain> -- runs certbot's
+# webserver plugin, which edits the vhost written by write_vhost in place to
+# add the ssl_certificate/SSLCertificateFile directives and (by default) an
+# HTTP->HTTPS redirect. Requires the domain to already resolve here and port
+# 80 to be reachable from the internet; on any failure this returns 1 and
+# changes nothing else, so the caller can fall back to a self-signed cert.
+obtain_letsencrypt_cert() {
+  local webserver="$1" domain="$2"
+  if ! command -v certbot >/dev/null 2>&1; then
+    log "certbot not found, installing..."
+    local pkgs=(certbot)
+    case "$PKG_MGR:$webserver" in
+      apt:nginx) pkgs+=(python3-certbot-nginx) ;;
+      apt:apache) pkgs+=(python3-certbot-apache) ;;
+      dnf:nginx|yum:nginx) pkgs+=(python3-certbot-nginx) ;;
+      dnf:apache|yum:apache) pkgs+=(python3-certbot-apache) ;;
+      zypper:nginx) pkgs+=(python3-certbot-nginx) ;;
+      zypper:apache) pkgs+=(python3-certbot-apache) ;;
+    esac
+    try_pkg_install "${pkgs[@]}" || { log "could not install certbot"; return 1; }
+  fi
+  local plugin_flag="--apache"
+  [[ "$webserver" == "nginx" ]] && plugin_flag="--nginx"
+  if certbot "$plugin_flag" -d "$domain" --agree-tos --register-unsafely-without-email \
+      --non-interactive 2>&1 | tee /tmp/wbdash-certbot.log 1>&2; then
+    if [[ "$webserver" == "nginx" ]]; then VHOST_PATH="$NGINX_CONF_PATH (certbot-managed)"
+    else VHOST_PATH="$APACHE_CONF_PATH (certbot-managed)"
+    fi
+    return 0
+  fi
+  log "certbot failed -- see /tmp/wbdash-certbot.log (common causes: DNS for $domain doesn't point here yet, or port 80/443 isn't reachable from the internet)"
+  return 1
+}
+
+# --- Wizard + dispatch ---------------------------------------------------
+
+save_prod_conf() {
+  mkdir -p "$(dirname "$PROD_CONF_FILE")"
+  printf 'PROD_CONFIGURED=%q\nPROD_WEBSERVER=%q\nPROD_TLS=%q\nPROD_DOMAIN=%q\nPROD_VHOST_PATH=%q\n' \
+    "$PROD_CONFIGURED" "$PROD_WEBSERVER" "$PROD_TLS" "$PROD_DOMAIN" "$PROD_VHOST_PATH" > "$PROD_CONF_FILE"
+}
+
+# cmd_production always runs as root (it re-execs itself with sudo, same as
+# cmd_install) so it can install packages and write /etc config -- but the
+# panel process itself must NOT end up owned by root: that's both a step
+# backwards on the "don't run this as root" guidance in README.md, and it'd
+# make a later plain `wbdash stop`/`status` (run as the normal user) unable
+# to even see the process, since kill -0 against a root-owned pid from a
+# non-root shell fails. So instead of starting the panel directly here, hand
+# off to a fresh non-root `wbdash start/restart --daemon` under the real
+# user -- same pidfile/log paths, same ownership as every other path that
+# starts the panel. $real_user is set once in cmd_production before this is
+# called. PANEL_FORCE_SSL is threaded through via `env` on the *outer*
+# (root) sudo call so it's present in the environment cmd_start's own `env
+# PANEL_HOST=... PANEL_PORT=...` wrapper inherits down to the panel binary.
+start_panel_as_real_user() {
+  local mode="${1:-start}"
+  local force_ssl=(); [[ "$PROD_TLS" != "none" ]] && force_ssl=(PANEL_FORCE_SSL=1)
+  sudo -u "$real_user" -H env "${force_ssl[@]}" "$SELF_PATH" "$mode" \
+    --host "$WBDASH_HOST_DEFAULT" --port "$WBDASH_PORT_DEFAULT" --daemon
+}
+
+# Starts whatever isn't currently running (panel and, if configured, the web
+# server) without touching the wizard's saved choices. Used both after the
+# wizard finishes and on every "already configured" re-run of `production`.
+ensure_running_production() {
+  mkdir -p "$(dirname "$PIDFILE")"
+  if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+    log "panel: running (pid $(cat "$PIDFILE"))"
+  else
+    log "panel was not running -- starting it..."
+    start_panel_as_real_user
+    sleep 1
+    log "panel: started (pid $(cat "$PIDFILE" 2>/dev/null || echo '?'))"
+  fi
+  if [[ "$PROD_WEBSERVER" != "none" ]]; then
+    webserver_pkg_and_svc "$PROD_WEBSERVER"
+    if systemctl is-active --quiet "$WS_SVC" 2>/dev/null; then
+      log "$WS_SVC: running"
+    else
+      log "$WS_SVC was not running -- starting it..."
+      systemctl start "$WS_SVC" >/dev/null 2>&1 || service "$WS_SVC" start >/dev/null 2>&1 \
+        || log "warning: could not start $WS_SVC -- start it manually"
+    fi
+  fi
+}
+
+run_production_wizard() {
+  ensure_dialog
+
+  ui_menu "Reverse proxy" "Which web server should front the KingsEmpire Manage Panel?" \
+    nginx  "nginx (recommended)" \
+    apache "Apache httpd" \
+    skip   "Skip -- I'll handle the reverse proxy/TLS myself" || true
+  local webserver="${UI_RESULT:-skip}"
+  [[ "$webserver" != "nginx" && "$webserver" != "apache" ]] && webserver="none"
+
+  if [[ "$webserver" == "none" ]]; then
+    ui_msg "Skipping reverse proxy setup. The panel keeps listening directly on $WBDASH_HOST_DEFAULT:$WBDASH_PORT_DEFAULT -- put your own TLS-terminating proxy in front of it before handing out access to customers."
+  else
+    webserver_pkg_and_svc "$webserver"
+    if command -v "$WS_SVC" >/dev/null 2>&1; then
+      log "$webserver appears to already be installed."
+    elif ui_yesno "$webserver isn't installed. Install it now via $PKG_MGR ($WS_PKG)?"; then
+      if ! try_pkg_install "$WS_PKG"; then
+        ui_msg "Failed to install $WS_PKG automatically. Install it yourself, then re-run 'wbdash production --reconfigure'."
+        webserver="none"
+      fi
+    else
+      ui_msg "Okay, not installing $webserver. Reverse proxy/TLS steps will be skipped -- set it up yourself."
+      webserver="none"
+    fi
+  fi
+
+  local tls="none"
+  if [[ "$webserver" != "none" ]]; then
+    if ui_yesno "Get a TLS certificate for the panel?"; then
+      ui_menu "TLS certificate" "How should the certificate be obtained?" \
+        letsencrypt "Let's Encrypt (needs a real domain pointing here)" \
+        selfsigned  "Self-signed (works with an IP, browsers will warn)" || true
+      tls="${UI_RESULT:-selfsigned}"
+      [[ "$tls" != "letsencrypt" && "$tls" != "selfsigned" ]] && tls="selfsigned"
+    fi
+  fi
+
+  ui_input "Domain name or IP the panel should be reached at:" "$(detect_lan_ip)" || true
+  local domain="$UI_RESULT"
+  [[ -z "$domain" ]] && die "a domain or IP is required for production setup"
+
+  if [[ "$tls" == "letsencrypt" && "$domain" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    ui_msg "Let's Encrypt can't issue a certificate for a bare IP address ($domain) -- falling back to a self-signed certificate."
+    tls="selfsigned"
+  fi
+
+  local port="$WBDASH_PORT_DEFAULT"
+  VHOST_PATH=""
+
+  if [[ "$webserver" != "none" ]]; then
+    write_vhost "$webserver" "$domain" "$port" "none"
+    if ! reload_webserver "$webserver"; then
+      ui_msg "The generated $webserver config didn't pass its syntax check (see the terminal output above). Aborting production setup -- nothing else was changed."
+      return 1
+    fi
+
+    if [[ "$tls" == "letsencrypt" ]]; then
+      if obtain_letsencrypt_cert "$webserver" "$domain"; then
+        log "Let's Encrypt certificate obtained and wired in by certbot."
+      else
+        ui_msg "Let's Encrypt failed for $domain -- falling back to a self-signed certificate so the panel is still reachable over HTTPS. (See the log above for why it failed -- usually DNS not pointed here yet, or port 80 unreachable.)"
+        tls="selfsigned"
+      fi
+    fi
+
+    if [[ "$tls" == "selfsigned" ]]; then
+      generate_selfsigned_cert "$domain"
+      write_vhost "$webserver" "$domain" "$port" "selfsigned"
+      if ! reload_webserver "$webserver"; then
+        ui_msg "The self-signed HTTPS config didn't pass its syntax check -- falling back to plain HTTP so the panel stays reachable. Check the terminal output above."
+        tls="none"
+        write_vhost "$webserver" "$domain" "$port" "none"
+        reload_webserver "$webserver" || true
+      fi
+    fi
+  fi
+
+  PROD_CONFIGURED=1
+  PROD_WEBSERVER="$webserver"
+  PROD_TLS="$tls"
+  PROD_DOMAIN="$domain"
+  PROD_VHOST_PATH="$VHOST_PATH"
+  save_prod_conf
+
+  if [[ "$webserver" != "none" ]]; then
+    save_conf "127.0.0.1" "$port"
+    WBDASH_HOST_DEFAULT="127.0.0.1"
+    log "panel now bound to 127.0.0.1:$port -- only reachable through $webserver"
+  fi
+
+  # Stop as root first (root can kill a stale root-owned pid from an older
+  # `production` run too, which a plain non-root stop below could not), then
+  # hand the actual start off to the real user -- see start_panel_as_real_user.
+  cmd_stop
+  start_panel_as_real_user start
+  sleep 1
+
+  echo
+  log "=== production setup complete ==="
+  log "web server: $webserver"
+  log "TLS:        $tls"
+  if [[ "$webserver" == "none" ]]; then
+    log "URL:        http://$domain:$port/  (no reverse proxy -- set one up yourself before going live)"
+  elif [[ "$tls" == "none" ]]; then
+    log "URL:        http://$domain/"
+  else
+    log "URL:        https://$domain/"
+  fi
+  [[ -n "$PROD_VHOST_PATH" ]] && log "vhost file: $PROD_VHOST_PATH"
+  log "panel process: $WBDASH_HOST_DEFAULT:$port (pid $(cat "$PIDFILE" 2>/dev/null || echo '?'))"
+}
+
+cmd_production() {
+  local reconfigure=0
+  for arg in "$@"; do
+    case "$arg" in
+      --reconfigure) reconfigure=1 ;;
+    esac
+  done
+
+  if [[ $EUID -ne 0 ]]; then
+    log "production setup touches system packages and /etc -- re-running with sudo..."
+    exec sudo -E "$SELF_PATH" production "$@"
+  fi
+
+  # Not `local` -- start_panel_as_real_user (called from both branches below)
+  # reads this too.
+  real_user="${SUDO_USER:-$(logname 2>/dev/null || echo root)}"
+
+  require_installed
+
+  read -r -s -p "[wbdash] Production setup password: " pass
+  echo
+  if [[ "$pass" != "$PRODUCTION_PASSWORD" ]]; then
+    die "incorrect password"
+  fi
+
+  detect_pkg_mgr
+
+  if [[ "$PROD_CONFIGURED" == "1" && $reconfigure -eq 0 ]]; then
+    log "production already configured:"
+    log "  web server: $PROD_WEBSERVER"
+    log "  TLS:        $PROD_TLS"
+    log "  domain/IP:  $PROD_DOMAIN"
+    log "  vhost:      $PROD_VHOST_PATH"
+    ensure_running_production
+    log "re-run 'wbdash production --reconfigure' to change any of this."
+    return
+  fi
+
+  run_production_wizard
+}
+
 # --- Dispatch ---------------------------------------------------------------
 
 cmd="${1:-}"
@@ -466,6 +1065,7 @@ case "$cmd" in
   restart) cmd_stop; sleep 1; cmd_start "$@" ;;
   manage) cmd_manage "$@" ;;
   debug|--debug) cmd_debug "$@" ;;
+  production|--production) cmd_production "$@" ;;
   help|-h|--help) print_help ;;
   "")
     if [[ ! -x "$PANEL_BIN" ]]; then

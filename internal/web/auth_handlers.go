@@ -53,3 +53,55 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, user *stor
 	s.auth.ClearSession(w)
 	http.Redirect(w, r, "/login", http.StatusFound)
 }
+
+type accountData struct {
+	Common
+}
+
+// handleAccountForm serves the self-service "My Account" page (any logged-in
+// user, not just admins) -- currently just the password-change form, but a
+// natural home for future self-service account settings.
+func (s *Server) handleAccountForm(w http.ResponseWriter, r *http.Request, user *store.User) {
+	data := accountData{Common: s.commonFor(w, r, user)}
+	s.render(w, r, user, "My Account", "account", "account", data)
+}
+
+func (s *Server) handleAccountPasswordSubmit(w http.ResponseWriter, r *http.Request, user *store.User) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	if !s.checkCSRF(w, r) {
+		return
+	}
+	current := r.FormValue("current_password")
+	newPassword := r.FormValue("new_password")
+	confirm := r.FormValue("confirm_password")
+
+	if !user.CheckPassword(current) {
+		s.flash(w, r, "error", "Current password is incorrect")
+		http.Redirect(w, r, "/account", http.StatusFound)
+		return
+	}
+	if len(newPassword) < 8 {
+		s.flash(w, r, "error", "New password must be at least 8 characters")
+		http.Redirect(w, r, "/account", http.StatusFound)
+		return
+	}
+	if newPassword != confirm {
+		s.flash(w, r, "error", "New passwords don't match")
+		http.Redirect(w, r, "/account", http.StatusFound)
+		return
+	}
+
+	if err := user.SetPassword(newPassword); err != nil {
+		s.serverError(w, "hash new password", err)
+		return
+	}
+	if err := s.store.UpdateUserPassword(user); err != nil {
+		s.serverError(w, "update password", err)
+		return
+	}
+	s.flash(w, r, "success", "Password changed")
+	http.Redirect(w, r, "/account", http.StatusFound)
+}
