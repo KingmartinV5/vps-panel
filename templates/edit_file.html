@@ -1,16 +1,14 @@
-{% extends "base.html" %}
-{% block title %}Edit {{ path }}{% endblock %}
-{% block content %}
+{{define "edit_file"}}
 <div class="page-header">
-  <h1>Edit: {{ path }}</h1>
-  <a class="tab" href="{{ url_for('server_files', server_id=server.id, path=path.rsplit('/', 1)[0] if '/' in path else '') }}">Back to files</a>
+  <h1>Edit: {{.Path}}</h1>
+  <a class="tab" href="/server/{{.Server.ID}}/files?path={{.BackPath}}">Back to files</a>
 </div>
-<form method="post" action="{{ url_for('server_files_edit', server_id=server.id) }}">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-  <input type="hidden" name="path" value="{{ path }}">
-  <textarea name="content" class="editor" spellcheck="false">{{ content }}</textarea>
+<form method="post" action="/server/{{.Server.ID}}/files/edit">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <input type="hidden" name="path" value="{{.Path}}">
+  <textarea name="content" class="editor" spellcheck="false">{{.Content}}</textarea>
   <div class="editor-actions">
     <button type="submit" class="btn btn-blue">Save</button>
   </div>
 </form>
-{% endblock %}
+{{end}}

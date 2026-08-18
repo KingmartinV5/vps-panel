@@ -1,51 +1,45 @@
+{{define "base.html"}}
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Panel{% endblock %} · VPS Panel</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <title>{{.Title}} · VPS Panel</title>
+  <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
-  {% if current_user.is_authenticated %}
+  {{if .CurrentUser}}
   <div class="shell">
     <nav class="sidebar">
       <div class="brand">VPS&nbsp;Panel</div>
-      <a href="{{ url_for('dashboard') }}" class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}">Servers</a>
-      {% if current_user.is_admin %}
+      <a href="/" class="nav-link {{if eq .ActiveNav "dashboard"}}active{{end}}">Servers</a>
+      {{if .CurrentUser.IsAdmin}}
       <div class="nav-section">Admin</div>
-      <a href="{{ url_for('admin_servers_create') }}" class="nav-link {% if request.endpoint == 'admin_servers_create' %}active{% endif %}">New Server</a>
-      <a href="{{ url_for('admin_users') }}" class="nav-link {% if request.endpoint == 'admin_users' %}active{% endif %}">Users</a>
-      {% endif %}
+      <a href="/admin/servers/create" class="nav-link {{if eq .ActiveNav "admin_servers_create"}}active{{end}}">New Server</a>
+      <a href="/admin/users" class="nav-link {{if eq .ActiveNav "admin_users"}}active{{end}}">Users</a>
+      {{end}}
       <div class="sidebar-footer">
-        <div class="whoami">{{ current_user.username }}{% if current_user.is_admin %} <span class="badge">admin</span>{% endif %}</div>
-        <a href="{{ url_for('logout') }}" class="nav-link">Log out</a>
+        <div class="whoami">{{.CurrentUser.Username}}{{if .CurrentUser.IsAdmin}} <span class="badge">admin</span>{{end}}</div>
+        <a href="/logout" class="nav-link">Log out</a>
       </div>
     </nav>
     <main class="content">
-      {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-          <div class="flashes">
-            {% for category, message in messages %}
-              <div class="flash flash-{{ category }}">{{ message }}</div>
-            {% endfor %}
-          </div>
-        {% endif %}
-      {% endwith %}
-      {% block content %}{% endblock %}
+      {{if .Flashes}}
+      <div class="flashes">
+        {{range .Flashes}}<div class="flash flash-{{.Category}}">{{.Message}}</div>{{end}}
+      </div>
+      {{end}}
+      {{.Content}}
     </main>
   </div>
-  {% else %}
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        <div class="flashes flashes-standalone">
-          {% for category, message in messages %}
-            <div class="flash flash-{{ category }}">{{ message }}</div>
-          {% endfor %}
-        </div>
-      {% endif %}
-    {% endwith %}
-    {% block guest_content %}{% endblock %}
-  {% endif %}
+  {{else}}
+    {{if .Flashes}}
+    <div class="flashes flashes-standalone">
+      {{range .Flashes}}<div class="flash flash-{{.Category}}">{{.Message}}</div>{{end}}
+    </div>
+    {{end}}
+    {{.Content}}
+  {{end}}
 </body>
 </html>
+{{end}}

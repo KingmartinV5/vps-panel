@@ -1,30 +1,28 @@
-{% extends "base.html" %}
-{% block title %}{{ server.name }} · Files{% endblock %}
-{% block content %}
+{{define "files"}}
 <div class="page-header">
-  <h1>{{ server.name }}</h1>
+  <h1>{{.Server.Name}}</h1>
   <div class="tabs">
-    <a class="tab" href="{{ url_for('server_detail', server_id=server.id) }}">Console</a>
+    <a class="tab" href="/server/{{.Server.ID}}">Console</a>
     <span class="tab active">Files</span>
-    <a class="tab" href="{{ url_for('server_backups', server_id=server.id) }}">Backups</a>
+    <a class="tab" href="/server/{{.Server.ID}}/backups">Backups</a>
   </div>
 </div>
 
 <div class="path-bar">
-  <a href="{{ url_for('server_files', server_id=server.id) }}">/data</a>
-  {% if path %}{% for part in path.split('/') %}/ <span>{{ part }}</span>{% endfor %}{% endif %}
+  <a href="/server/{{.Server.ID}}/files">/data</a>
+  {{range .PathParts}}/ <span>{{.}}</span>{{end}}
 </div>
 
 <div class="file-toolbar">
-  <form class="inline-form" method="post" action="{{ url_for('server_files_upload', server_id=server.id) }}" enctype="multipart/form-data">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <input type="hidden" name="path" value="{{ path }}">
+  <form class="inline-form" method="post" action="/server/{{.Server.ID}}/files/upload" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <input type="hidden" name="path" value="{{.Path}}">
     <input type="file" name="file" required>
     <button type="submit" class="btn btn-blue">Upload</button>
   </form>
-  <form class="inline-form" method="post" action="{{ url_for('server_files_mkdir', server_id=server.id) }}">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <input type="hidden" name="path" value="{{ path }}">
+  <form class="inline-form" method="post" action="/server/{{.Server.ID}}/files/mkdir">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <input type="hidden" name="path" value="{{.Path}}">
     <input type="text" name="name" placeholder="New folder name" required>
     <button type="submit" class="btn btn-outline">New Folder</button>
   </form>
@@ -33,35 +31,35 @@
 <table class="file-table">
   <thead><tr><th>Name</th><th>Size</th><th>Modified</th><th></th></tr></thead>
   <tbody>
-    {% if parent is not none %}
+    {{if .HasParent}}
     <tr>
-      <td colspan="4"><a href="{{ url_for('server_files', server_id=server.id, path=parent) }}">.. (up)</a></td>
+      <td colspan="4"><a href="/server/{{.Server.ID}}/files?path={{.ParentPath}}">.. (up)</a></td>
     </tr>
-    {% endif %}
-    {% for e in entries %}
+    {{end}}
+    {{range .Entries}}
     <tr>
       <td>
-        {% if e.is_dir %}
-          <a href="{{ url_for('server_files', server_id=server.id, path=(path + '/' + e.name if path else e.name)) }}">📁 {{ e.name }}</a>
-        {% else %}
-          {{ e.name }}
-        {% endif %}
+        {{if .IsDir}}
+          <a href="/server/{{$.Server.ID}}/files?path={{.RelPath}}">📁 {{.Name}}</a>
+        {{else}}
+          {{.Name}}
+        {{end}}
       </td>
-      <td>{{ e.size if e.size is not none else '' }}</td>
-      <td>{{ e.mtime.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td>{{.SizeDisplay}}</td>
+      <td>{{.MTimeStr}}</td>
       <td class="row-actions">
-        {% if not e.is_dir %}
-        <a href="{{ url_for('server_files_edit', server_id=server.id, path=(path + '/' + e.name if path else e.name)) }}">Edit</a>
-        <a href="{{ url_for('server_files_download', server_id=server.id, path=(path + '/' + e.name if path else e.name)) }}">Download</a>
-        {% endif %}
-        <form class="inline-form" method="post" action="{{ url_for('server_files_delete', server_id=server.id) }}" onsubmit="return confirm('Delete {{ e.name }}?');">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <input type="hidden" name="path" value="{{ path + '/' + e.name if path else e.name }}">
+        {{if not .IsDir}}
+        <a href="/server/{{$.Server.ID}}/files/edit?path={{.RelPath}}">Edit</a>
+        <a href="/server/{{$.Server.ID}}/files/download?path={{.RelPath}}">Download</a>
+        {{end}}
+        <form class="inline-form" method="post" action="/server/{{$.Server.ID}}/files/delete" onsubmit="return confirm('Delete {{.Name}}?');">
+          <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+          <input type="hidden" name="path" value="{{.RelPath}}">
           <button type="submit" class="link-btn danger">Delete</button>
         </form>
       </td>
     </tr>
-    {% endfor %}
+    {{end}}
   </tbody>
 </table>
-{% endblock %}
+{{end}}

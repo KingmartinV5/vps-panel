@@ -1,23 +1,21 @@
-{% extends "base.html" %}
-{% block title %}Servers{% endblock %}
-{% block content %}
+{{define "dashboard"}}
 <h1>Your Servers</h1>
-{% if not servers %}
-  <p class="muted">No servers yet.{% if current_user.is_admin %} <a href="{{ url_for('admin_servers_create') }}">Create one</a>.{% endif %}</p>
-{% else %}
+{{if not .Servers}}
+  <p class="muted">No servers yet.{{if .CurrentUser.IsAdmin}} <a href="/admin/servers/create">Create one</a>.{{end}}</p>
+{{else}}
 <div class="server-grid">
-  {% for s in servers %}
-  <a class="server-card" href="{{ url_for('server_detail', server_id=s.id) }}">
+  {{range .Servers}}
+  <a class="server-card" href="{{.URL}}">
     <div class="server-card-top">
-      <span class="status-dot status-{{ statuses.get(s.id, 'unknown') }}"></span>
-      <span class="server-name">{{ s.name }}</span>
+      <span class="status-dot status-{{.Status}}"></span>
+      <span class="server-name">{{.Name}}</span>
     </div>
-    <div class="server-card-meta">{{ s.image }}</div>
-    <div class="server-card-meta">{{ statuses.get(s.id, 'unknown') }} · {{ s.memory_mb }} MB
-      {% if current_user.is_admin and s.owner %} · owner: {{ s.owner.username }}{% endif %}
+    <div class="server-card-meta">{{.Image}}</div>
+    <div class="server-card-meta">{{.Status}} · {{.MemoryMB}} MB
+      {{if .HasOwner}} · owner: {{.OwnerUsername}}{{end}}
     </div>
   </a>
-  {% endfor %}
+  {{end}}
 </div>
-{% endif %}
-{% endblock %}
+{{end}}
+{{end}}
