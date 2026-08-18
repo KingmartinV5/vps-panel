@@ -84,7 +84,7 @@ From then on `wbdash` is just a command, from any directory:
 wbdash start --host 0.0.0.0 --port 8080 --daemon   # background, remembers host/port
 wbdash status
 wbdash stop
-wbdash manage create-user alice                     # forwards to manage.py
+wbdash manage create-user alice                     # forwards to `panel manage`
 wbdash help
 ```
 
@@ -181,7 +181,7 @@ that still allows Docker socket access.)
 
 - Billing/subscription integration
 - Per-customer CPU quota beyond the container's own `mem_limit`
-  (add `nano_cpus`/`cpu_quota` in `docker_manager.create_container` if you
+  (add `nano_cpus`/`cpu_quota` in `internal/dockermgr.CreateContainer` if you
   want hard CPU caps too)
 - Multi-server-per-container-image templates / one-click installers
 - Audit log of admin actions
